@@ -14,7 +14,9 @@
       {
         "title": "bilibili-downloader",
         "width": 800,
-        "height": 900
+        "height": 900,
+        "titleBarStyle": "Transparent",
+        "backgroundColor": "#FACC15"
       }
     ],
     "security": {
