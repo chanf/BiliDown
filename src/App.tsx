@@ -529,10 +529,13 @@ function App() {
                 {displayDownloadTasks.map((task) => {
                   const statusText = getStatusText(task.status);
                   const errorText = getErrorFromStatus(task.status) || task.error;
+                  const displayTitle = (task.part_title && task.part_title.trim())
+                    ? task.part_title
+                    : task.title;
                   return (
                     <div key={task.task_id} className="download-item">
                       <div className="download-info">
-                        <span className="download-title">{task.title}</span>
+                        <span className="download-title">{displayTitle}</span>
                         <span className={`download-status status-${statusText.toLowerCase()}`}>
                           {statusText === 'Pending' && '等待中'}
                           {statusText === 'Downloading' && '下载中'}

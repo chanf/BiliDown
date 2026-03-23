@@ -189,41 +189,47 @@ async fn run_download_pipeline(
     let audio_part = temp_dir.join("audio.part");
     let downloader = ChunkedDownloader::new(request.config.clone());
 
-    let video_result = downloader
-        .download_stream_to_part(&request.video_url, &video_part, &control, |downloaded, total| {
-            update_task_and_emit(state, app_handle, task_id, |task| {
-                task.video_downloaded = downloaded;
-                task.video_size = total;
-                task.video_progress = if total == 0 {
-                    0.0
-                } else {
-                    (downloaded as f32 / total as f32).clamp(0.0, 1.0)
-                };
-                if task.status != TaskStatus::Paused {
-                    task.status = TaskStatus::Downloading;
-                }
-            });
-        })
-        .await
-        .context("视频下载失败")?;
+    let video_future = async {
+        downloader
+            .download_stream_to_part(&request.video_url, &video_part, &control, |downloaded, total| {
+                update_task_and_emit(state, app_handle, task_id, |task| {
+                    task.video_downloaded = downloaded;
+                    task.video_size = total;
+                    task.video_progress = if total == 0 {
+                        0.0
+                    } else {
+                        (downloaded as f32 / total as f32).clamp(0.0, 1.0)
+                    };
+                    if task.status != TaskStatus::Paused {
+                        task.status = TaskStatus::Downloading;
+                    }
+                });
+            })
+            .await
+            .context("视频下载失败")
+    };
 
-    let audio_result = downloader
-        .download_stream_to_part(&request.audio_url, &audio_part, &control, |downloaded, total| {
-            update_task_and_emit(state, app_handle, task_id, |task| {
-                task.audio_downloaded = downloaded;
-                task.audio_size = total;
-                task.audio_progress = if total == 0 {
-                    0.0
-                } else {
-                    (downloaded as f32 / total as f32).clamp(0.0, 1.0)
-                };
-                if task.status != TaskStatus::Paused {
-                    task.status = TaskStatus::Downloading;
-                }
-            });
-        })
-        .await
-        .context("音频下载失败")?;
+    let audio_future = async {
+        downloader
+            .download_stream_to_part(&request.audio_url, &audio_part, &control, |downloaded, total| {
+                update_task_and_emit(state, app_handle, task_id, |task| {
+                    task.audio_downloaded = downloaded;
+                    task.audio_size = total;
+                    task.audio_progress = if total == 0 {
+                        0.0
+                    } else {
+                        (downloaded as f32 / total as f32).clamp(0.0, 1.0)
+                    };
+                    if task.status != TaskStatus::Paused {
+                        task.status = TaskStatus::Downloading;
+                    }
+                });
+            })
+            .await
+            .context("音频下载失败")
+    };
+
+    let (video_result, audio_result) = tokio::try_join!(video_future, audio_future)?;
 
     update_task_and_emit(state, app_handle, task_id, |task| {
         task.status = TaskStatus::Merging;
@@ -247,8 +253,8 @@ async fn run_download_pipeline(
     let (merge_tx, _merge_rx) = tokio::sync::mpsc::channel(1);
     merger
         .merge(
-            &[video_result.output_path.clone()],
-            &[audio_result.output_path.clone()],
+            &video_result.output_paths,
+            &audio_result.output_paths,
             &output_path,
             merge_tx,
         )

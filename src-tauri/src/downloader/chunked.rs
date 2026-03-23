@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncWriteExt;
+use tokio::task::JoinSet;
 
 use crate::downloader::{DownloadConfig, TaskControl};
 
@@ -11,7 +13,22 @@ const PAUSE_POLL_MS: u64 = 200;
 pub struct StreamDownloadResult {
     pub downloaded: u64,
     pub total: u64,
-    pub output_path: PathBuf,
+    pub output_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct ChunkPlan {
+    index: usize,
+    start: u64,
+    end: u64,
+    len: u64,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct ChunkJob {
+    plan: ChunkPlan,
+    existing: u64,
 }
 
 pub struct ChunkedDownloader {
@@ -46,66 +63,89 @@ impl ChunkedDownloader {
         }
 
         let total_size = self.fetch_total_size(url).await?;
-        let mut downloaded = self.local_file_size(output_path).await?;
+        let chunk_dir = chunk_dir_from_output(output_path);
+        tokio::fs::create_dir_all(&chunk_dir).await?;
 
-        if downloaded > total_size {
-            tokio::fs::write(output_path, Vec::<u8>::new()).await?;
-            downloaded = 0;
+        let plans = build_chunk_plans(total_size, self.config.chunk_size as u64, &chunk_dir);
+        if plans.is_empty() {
+            anyhow::bail!("分块规划失败，文件大小无效");
+        }
+
+        let mut downloaded = 0u64;
+        let mut jobs = Vec::new();
+
+        for plan in &plans {
+            let existing = inspect_existing_chunk(plan).await?;
+            downloaded = downloaded.saturating_add(existing);
+
+            if existing < plan.len {
+                jobs.push(ChunkJob {
+                    plan: plan.clone(),
+                    existing,
+                });
+            }
         }
 
         on_progress(downloaded, total_size);
-        if downloaded == total_size {
+
+        if jobs.is_empty() {
             return Ok(StreamDownloadResult {
-                downloaded,
+                downloaded: total_size,
                 total: total_size,
-                output_path: output_path.to_path_buf(),
+                output_paths: plans.into_iter().map(|p| p.path).collect(),
             });
         }
 
-        while downloaded < total_size {
-            self.wait_if_paused(control).await?;
-            self.ensure_not_cancelled(control)?;
+        let concurrency = self.config.concurrent_connections.max(1);
+        let mut queue: VecDeque<ChunkJob> = VecDeque::from(jobs);
+        let mut join_set = JoinSet::new();
+        let client = self.client.clone();
+        let config = self.config.clone();
+        let url_owned = url.to_string();
 
-            let start = downloaded;
-            let end = start
-                .saturating_add(self.config.chunk_size as u64)
-                .saturating_sub(1)
-                .min(total_size.saturating_sub(1));
-
-            let bytes = self
-                .fetch_chunk_with_retry(url, start, end, control)
-                .await
-                .with_context(|| format!("下载分段失败: bytes={}-{}", start, end))?;
-
-            if bytes.is_empty() {
-                anyhow::bail!("服务器返回空分段: bytes={}-{}", start, end);
+        for _ in 0..concurrency.min(queue.len()) {
+            if let Some(job) = queue.pop_front() {
+                let client = client.clone();
+                let config = config.clone();
+                let url = url_owned.clone();
+                let control = control.clone();
+                join_set.spawn(async move { download_chunk_job(client, config, url, job, control).await });
             }
+        }
 
-            let mut file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(output_path)
-                .await?;
-            file.write_all(&bytes).await?;
-            file.flush().await?;
-
-            downloaded = downloaded.saturating_add(bytes.len() as u64).min(total_size);
+        while let Some(join_result) = join_set.join_next().await {
+            let newly_downloaded = join_result
+                .map_err(|e| anyhow::anyhow!("并发下载任务异常退出: {}", e))??;
+            downloaded = downloaded.saturating_add(newly_downloaded).min(total_size);
             on_progress(downloaded, total_size);
+
+            if let Some(job) = queue.pop_front() {
+                let client = client.clone();
+                let config = config.clone();
+                let url = url_owned.clone();
+                let control = control.clone();
+                join_set.spawn(async move { download_chunk_job(client, config, url, job, control).await });
+            }
         }
 
-        let final_size = self.local_file_size(output_path).await?;
-        if final_size != total_size {
-            anyhow::bail!(
-                "文件大小校验失败: downloaded={}, expected={}",
-                final_size,
-                total_size
-            );
+        for plan in &plans {
+            let size = local_file_size(&plan.path).await?;
+            if size != plan.len {
+                anyhow::bail!(
+                    "分块校验失败: index={}, got={}, expected={}",
+                    plan.index,
+                    size,
+                    plan.len
+                );
+            }
         }
+
+        on_progress(total_size, total_size);
 
         Ok(StreamDownloadResult {
-            downloaded: final_size,
+            downloaded: total_size,
             total: total_size,
-            output_path: output_path.to_path_buf(),
+            output_paths: plans.into_iter().map(|p| p.path).collect(),
         })
     }
 
@@ -149,93 +189,209 @@ impl ChunkedDownloader {
 
         anyhow::bail!("无法获取远端文件大小");
     }
+}
 
-    async fn fetch_chunk_with_retry(
-        &self,
-        url: &str,
-        start: u64,
-        end: u64,
-        control: &TaskControl,
-    ) -> Result<Vec<u8>> {
-        let mut last_error: Option<anyhow::Error> = None;
+fn build_chunk_plans(total_size: u64, chunk_size: u64, chunk_dir: &Path) -> Vec<ChunkPlan> {
+    let mut plans = Vec::new();
+    let mut index = 0usize;
+    let mut start = 0u64;
 
-        for attempt in 0..=self.config.max_retry {
-            self.wait_if_paused(control).await?;
-            self.ensure_not_cancelled(control)?;
+    while start < total_size {
+        let end = start
+            .saturating_add(chunk_size)
+            .saturating_sub(1)
+            .min(total_size.saturating_sub(1));
+        plans.push(ChunkPlan {
+            index,
+            start,
+            end,
+            len: end.saturating_sub(start).saturating_add(1),
+            path: chunk_dir.join(format!("{:06}.part", index)),
+        });
+        index = index.saturating_add(1);
+        start = end.saturating_add(1);
+    }
 
-            match self.fetch_chunk(url, start, end).await {
-                Ok(bytes) => return Ok(bytes),
-                Err(err) => {
-                    last_error = Some(err);
-                    if attempt < self.config.max_retry {
-                        let delay = 2u64.pow(attempt as u32);
-                        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-                    }
+    plans
+}
+
+fn chunk_dir_from_output(output_path: &Path) -> PathBuf {
+    let base_name = output_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("stream");
+    output_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{}.chunks", base_name))
+}
+
+async fn inspect_existing_chunk(plan: &ChunkPlan) -> Result<u64> {
+    let size = local_file_size(&plan.path).await?;
+    if size <= plan.len {
+        return Ok(size);
+    }
+
+    tokio::fs::remove_file(&plan.path).await.ok();
+    Ok(0)
+}
+
+async fn download_chunk_job(
+    client: Client,
+    config: DownloadConfig,
+    url: String,
+    job: ChunkJob,
+    control: TaskControl,
+) -> Result<u64> {
+    if job.existing >= job.plan.len {
+        return Ok(0);
+    }
+
+    wait_if_paused(&control).await?;
+    ensure_not_cancelled(&control)?;
+
+    let range_start = job.plan.start.saturating_add(job.existing);
+    let range_end = job.plan.end;
+    let expected = job.plan.len.saturating_sub(job.existing);
+
+    let bytes = fetch_chunk_with_retry(&client, &config, &url, range_start, range_end, &control)
+        .await
+        .with_context(|| {
+            format!(
+                "下载分块失败: index={}, bytes={}-{}",
+                job.plan.index, range_start, range_end
+            )
+        })?;
+
+    if bytes.is_empty() {
+        anyhow::bail!("服务器返回空分块: index={}", job.plan.index);
+    }
+
+    if bytes.len() as u64 != expected {
+        anyhow::bail!(
+            "分块长度不匹配: index={}, got={}, expected={}",
+            job.plan.index,
+            bytes.len(),
+            expected
+        );
+    }
+
+    if let Some(parent) = job.plan.path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&job.plan.path)
+        .await?;
+    file.write_all(&bytes).await?;
+    file.flush().await?;
+
+    let final_size = local_file_size(&job.plan.path).await?;
+    if final_size != job.plan.len {
+        anyhow::bail!(
+            "分块写入校验失败: index={}, got={}, expected={}",
+            job.plan.index,
+            final_size,
+            job.plan.len
+        );
+    }
+
+    Ok(expected)
+}
+
+async fn fetch_chunk_with_retry(
+    client: &Client,
+    config: &DownloadConfig,
+    url: &str,
+    start: u64,
+    end: u64,
+    control: &TaskControl,
+) -> Result<Vec<u8>> {
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for attempt in 0..=config.max_retry {
+        wait_if_paused(control).await?;
+        ensure_not_cancelled(control)?;
+
+        match fetch_chunk(client, config, url, start, end).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) => {
+                last_error = Some(err);
+                if attempt < config.max_retry {
+                    let delay = 2u64.pow(attempt as u32);
+                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                 }
             }
         }
-
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("下载失败")))
     }
 
-    async fn fetch_chunk(&self, url: &str, start: u64, end: u64) -> Result<Vec<u8>> {
-        let range = format!("bytes={}-{}", start, end);
-        let response = self
-            .client
-            .get(url)
-            .header("Range", &range)
-            .header("Referer", "https://www.bilibili.com")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            .header("Origin", "https://www.bilibili.com")
-            .header("Sec-Fetch-Site", "same-site")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Dest", "video")
-            .header("Accept", "*/*")
-            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-            .timeout(std::time::Duration::from_secs(self.config.timeout))
-            .send()
-            .await?;
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("下载失败")))
+}
 
-        if response.status().as_u16() == 416 {
-            anyhow::bail!("Range 416: bytes={}-{}", start, end);
-        }
+async fn fetch_chunk(
+    client: &Client,
+    config: &DownloadConfig,
+    url: &str,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>> {
+    let range = format!("bytes={}-{}", start, end);
+    let response = client
+        .get(url)
+        .header("Range", &range)
+        .header("Referer", "https://www.bilibili.com")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .header("Origin", "https://www.bilibili.com")
+        .header("Sec-Fetch-Site", "same-site")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Dest", "video")
+        .header("Accept", "*/*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .timeout(std::time::Duration::from_secs(config.timeout))
+        .send()
+        .await?;
 
-        if response.status().as_u16() != 206 {
-            anyhow::bail!(
-                "下载状态码异常: status={}, range={}",
-                response.status(),
-                range
-            );
-        }
-
-        let bytes = response.bytes().await?;
-        Ok(bytes.to_vec())
+    if response.status().as_u16() == 416 {
+        anyhow::bail!("Range 416: bytes={}-{}", start, end);
     }
 
-    async fn local_file_size(&self, path: &Path) -> Result<u64> {
-        if !path.exists() {
-            return Ok(0);
-        }
-        Ok(tokio::fs::metadata(path).await?.len())
+    if response.status().as_u16() != 206 {
+        anyhow::bail!(
+            "下载状态码异常: status={}, range={}",
+            response.status(),
+            range
+        );
     }
 
-    async fn wait_if_paused(&self, control: &TaskControl) -> Result<()> {
-        while control.paused.load(Ordering::SeqCst) {
-            self.ensure_not_cancelled(control)?;
-            tokio::time::sleep(std::time::Duration::from_millis(PAUSE_POLL_MS)).await;
-        }
-        Ok(())
-    }
+    let bytes = response.bytes().await?;
+    Ok(bytes.to_vec())
+}
 
-    fn ensure_not_cancelled(&self, control: &TaskControl) -> Result<()> {
-        if control.cancelled.load(Ordering::SeqCst) {
-            anyhow::bail!("任务已取消");
-        }
-        Ok(())
+async fn local_file_size(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
     }
+    Ok(tokio::fs::metadata(path).await?.len())
+}
+
+async fn wait_if_paused(control: &TaskControl) -> Result<()> {
+    while control.paused.load(Ordering::SeqCst) {
+        ensure_not_cancelled(control)?;
+        tokio::time::sleep(std::time::Duration::from_millis(PAUSE_POLL_MS)).await;
+    }
+    Ok(())
+}
+
+fn ensure_not_cancelled(control: &TaskControl) -> Result<()> {
+    if control.cancelled.load(Ordering::SeqCst) {
+        anyhow::bail!("任务已取消");
+    }
+    Ok(())
 }
 
 fn parse_total_from_content_range(content_range: &str) -> Option<u64> {

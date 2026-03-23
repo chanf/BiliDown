@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::Sender;
 
 pub struct VideoMerger {
@@ -105,42 +106,30 @@ impl VideoMerger {
         eprintln!("合并{}: {} 个分块, 总大小 {} 字节 ({:.2} MB)",
                  stream_type, chunks.len(), total_size, total_size as f64 / 1024.0 / 1024.0);
 
-        let file_list_path = output_path.with_extension("txt");
-        let mut file_list_content = String::new();
-        for chunk in chunks {
-            // 使用绝对路径并正确转义
-            let absolute_path = if chunk.is_absolute() {
-                chunk.clone()
-            } else {
-                std::path::PathBuf::from(&chunk.canonicalize().unwrap_or_else(|_| chunk.clone()))
-            };
-            // Windows 风格路径需要额外处理反斜杠
-            let path_str = absolute_path.to_string_lossy()
-                .replace('\\', "\\\\")
-                .replace("'", "\\'");
-            file_list_content.push_str(&format!("file '{}'\n", path_str));
-        }
-        tokio::fs::write(&file_list_path, file_list_content).await?;
-
-        let codec = if stream_type == "video" { "copy" } else { "copy" };
-
-        let output = tokio::process::Command::new(&self.ffmpeg_path)
-            .args([
-                "-f", "concat",
-                "-safe", "0",
-                "-i", &file_list_path.to_string_lossy(),
-                "-c", codec,
-                "-y",
-                &output_path.to_string_lossy(),
-            ])
-            .output()
+        // 分块是按 HTTP Range 拆分的原始字节，必须按顺序做二进制拼接
+        // 不能使用 ffmpeg concat（要求输入是独立且可解复用的媒体文件）
+        let mut output_file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(output_path)
             .await?;
 
-        tokio::fs::remove_file(&file_list_path).await.ok();
+        for chunk in chunks {
+            let mut input_file = tokio::fs::File::open(chunk).await?;
+            tokio::io::copy(&mut input_file, &mut output_file).await?;
+        }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("合并{}分块失败: {}", stream_type, stderr);
+        output_file.flush().await?;
+
+        let merged_size = tokio::fs::metadata(output_path).await?.len();
+        if merged_size != total_size {
+            anyhow::bail!(
+                "合并{}分块后大小不一致: got={}, expected={}",
+                stream_type,
+                merged_size,
+                total_size
+            );
         }
 
         Ok(())
