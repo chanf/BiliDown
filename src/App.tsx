@@ -74,6 +74,7 @@ function App() {
 
   const [selectedVideos, setSelectedVideos] = useState<Set<number>>(new Set());
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
+  const [downloadTab, setDownloadTab] = useState<"active" | "completed">("active");
   const [showConfig, setShowConfig] = useState(false);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
@@ -303,6 +304,15 @@ function App() {
     }
   }
 
+  const activeDownloadTasks = downloadTasks.filter(
+    (task) => getStatusText(task.status) !== "Completed"
+  );
+  const completedDownloadTasks = downloadTasks.filter(
+    (task) => getStatusText(task.status) === "Completed"
+  );
+  const displayDownloadTasks =
+    downloadTab === "active" ? activeDownloadTasks : completedDownloadTasks;
+
   return (
     <div className="container">
       <header>
@@ -417,12 +427,34 @@ function App() {
         )}
 
         <section className="download-section">
-          <h2>📥 下载列表</h2>
-          {downloadTasks.length === 0 ? (
-            <p className="empty">暂无下载任务</p>
+          <div className="download-header">
+            <h2>📥 下载列表</h2>
+            <div className="download-tabs">
+              <button
+                type="button"
+                className={`download-tab-btn ${downloadTab === "active" ? "active" : ""}`}
+                onClick={() => setDownloadTab("active")}
+              >
+                下载中
+                <span className="download-tab-count">{activeDownloadTasks.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`download-tab-btn ${downloadTab === "completed" ? "active" : ""}`}
+                onClick={() => setDownloadTab("completed")}
+              >
+                已下载
+                <span className="download-tab-count">{completedDownloadTasks.length}</span>
+              </button>
+            </div>
+          </div>
+          {displayDownloadTasks.length === 0 ? (
+            <p className="empty">
+              {downloadTab === "active" ? "暂无下载中任务" : "暂无已下载任务"}
+            </p>
           ) : (
             <div className="download-list">
-              {downloadTasks.map((task) => {
+              {displayDownloadTasks.map((task) => {
                 const statusText = getStatusText(task.status);
                 const errorText = getErrorFromStatus(task.status) || task.error;
                 return (
@@ -544,7 +576,6 @@ function App() {
 
       <footer>
         <div className="footer-content">
-          <p>基于 Tauri + React 构建 | 使用前请先登录 B 站账号</p>
           <div className="footer-buttons">
             <button className="config-btn" onClick={openDownloadDir}>📁 打开目录</button>
             <button className="config-btn" onClick={() => setShowConfig(true)}>⚙️ 设置</button>
