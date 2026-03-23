@@ -1,4 +1,4 @@
-use crate::bilibili::{BilibiliClient, PlaylistVideo};
+use crate::bilibili::{BilibiliClient, CollectionMode, PlaylistVideo};
 use crate::login::{BilibiliLogin, LoginStatus};
 use crate::downloader::{
     DownloadConfig, DownloadManager, DownloadState, DownloadTask, StartDownloadRequest,
@@ -15,15 +15,16 @@ pub struct ParseUrlResult {
 }
 
 #[tauri::command]
-pub async fn parse_url(url: String) -> Result<ParseUrlResult, String> {
+pub async fn parse_url(url: String, collection_mode: Option<String>) -> Result<ParseUrlResult, String> {
     let client = BilibiliClient::new();
+    let mode = CollectionMode::from_option_str(collection_mode.as_deref());
 
     let (_url_type, bvid) = BilibiliClient::parse_url(&url)
         .map_err(|e| e.to_string())?;
 
     let bvid = bvid.ok_or("无法解析视频 ID")?;
 
-    let playlist = client.get_video_playlist(&bvid)
+    let playlist = client.get_video_playlist_with_mode(&bvid, mode)
         .await
         .map_err(|e| e.to_string())?;
 

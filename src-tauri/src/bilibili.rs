@@ -1,6 +1,7 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
+use std::collections::HashSet;
 
 /// B 站 URL 类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +38,31 @@ pub struct PlaylistVideo {
     pub index: i32,
 }
 
+/// 合集识别模式
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CollectionMode {
+    /// 仅使用结构化数据（精准）
+    Strict,
+    /// 结构化优先 + HTML 初始状态兜底（兼容）
+    Compat,
+}
+
+impl Default for CollectionMode {
+    fn default() -> Self {
+        Self::Strict
+    }
+}
+
+impl CollectionMode {
+    pub fn from_option_str(mode: Option<&str>) -> Self {
+        match mode.map(|s| s.trim().to_ascii_lowercase()) {
+            Some(v) if v == "compat" => Self::Compat,
+            _ => Self::Strict,
+        }
+    }
+}
+
 /// B 站客户端
 pub struct BilibiliClient {
     client: Client,
@@ -68,8 +94,7 @@ impl BilibiliClient {
         anyhow::bail!("无法识别的 B 站 URL");
     }
 
-    /// 获取视频信息
-    pub async fn get_video_info(&self, bvid: &str) -> Result<VideoInfo> {
+    async fn get_view_data_json(&self, bvid: &str) -> Result<serde_json::Value> {
         let url = format!("https://api.bilibili.com/x/web-interface/view?bvid={}", bvid);
         let mut req = self.client.get(&url);
 
@@ -84,41 +109,79 @@ impl BilibiliClient {
             anyhow::bail!("获取视频信息失败: {}", json["message"]);
         }
 
-        let data = &json["data"];
-        Ok(VideoInfo {
-            bvid: data["bvid"].as_str().unwrap().to_string(),
-            title: data["title"].as_str().unwrap().to_string(),
-            owner: data["owner"]["name"].as_str().unwrap().to_string(),
-            cid: data["cid"].as_i64().unwrap(),
-            pages: data["pages"].as_array()
-                .unwrap()
-                .iter()
-                .map(|p| VideoPage {
-                    page: p["page"].as_i64().unwrap() as i32,
-                    cid: p["cid"].as_i64().unwrap(),
-                    part: p["part"].as_str().unwrap().to_string(),
-                    duration: p["duration"].as_i64().unwrap() as i32,
+        Ok(json["data"].clone())
+    }
+
+    fn parse_video_info_from_data(data: &serde_json::Value) -> Result<VideoInfo> {
+        let bvid = data["bvid"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("缺少 bvid"))?
+            .to_string();
+        let title = data["title"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("缺少 title"))?
+            .to_string();
+        let owner = data["owner"]["name"].as_str().unwrap_or("").to_string();
+        let cid = data["cid"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("缺少 cid"))?;
+        let intro = data["desc"].as_str().unwrap_or("").to_string();
+
+        let pages = data["pages"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("缺少 pages"))?
+            .iter()
+            .filter_map(|p| {
+                Some(VideoPage {
+                    page: p["page"].as_i64()? as i32,
+                    cid: p["cid"].as_i64()?,
+                    part: p["part"].as_str().unwrap_or("").to_string(),
+                    duration: p["duration"].as_i64().unwrap_or(0) as i32,
                 })
-                .collect(),
-            intro: data["desc"].as_str().unwrap_or("").to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        if pages.is_empty() {
+            anyhow::bail!("视频 pages 为空");
+        }
+
+        Ok(VideoInfo {
+            bvid,
+            title,
+            owner,
+            cid,
+            pages,
+            intro,
         })
     }
 
-    /// 获取视频所属的合集/系列列表（优先使用 API 的 pages 信息）
-    pub async fn get_video_playlist(&self, bvid: &str) -> Result<PlaylistResult> {
-        // 首先获取视频信息，检查是否有分P
-        let video_info = self.get_video_info(bvid).await?;
+    /// 获取视频信息
+    pub async fn get_video_info(&self, bvid: &str) -> Result<VideoInfo> {
+        let data = self.get_view_data_json(bvid).await?;
+        Self::parse_video_info_from_data(&data)
+    }
 
-        // 如果有多个分P，直接使用分P信息
+    /// 获取视频所属的合集/系列列表（结构化优先）
+    pub async fn get_video_playlist_with_mode(
+        &self,
+        bvid: &str,
+        mode: CollectionMode,
+    ) -> Result<PlaylistResult> {
+        let view_data = self.get_view_data_json(bvid).await?;
+        let video_info = Self::parse_video_info_from_data(&view_data)?;
+
+        // 1) 多分P优先
         if video_info.pages.len() > 1 {
-            let playlist_videos: Vec<PlaylistVideo> = video_info.pages.iter().map(|page| {
-                PlaylistVideo {
+            let playlist_videos: Vec<PlaylistVideo> = video_info
+                .pages
+                .iter()
+                .map(|page| PlaylistVideo {
                     bvid: bvid.to_string(),
                     cid: page.cid,
                     title: page.part.clone(),
                     index: page.page,
-                }
-            }).collect();
+                })
+                .collect();
 
             return Ok(PlaylistResult {
                 r#type: "multi_part".to_string(),
@@ -127,60 +190,32 @@ impl BilibiliClient {
             });
         }
 
-        // 单个分P，尝试从 HTML 中提取合集链接
-        let url = format!("https://www.bilibili.com/video/{}", bvid);
-        let mut req = self.client.get(&url)
-            .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-            .header("Accept-Encoding", "gzip, deflate, br")
-            .header("Referer", "https://www.bilibili.com")
-            .header("Connection", "keep-alive");
-
-        if let Some(ref sessdata) = self.sessdata {
-            req = req.header("Cookie", format!("SESSDATA={}", sessdata));
-        }
-
-        let resp = req.send().await?;
-        let html = resp.text().await?;
-
-        // 从 HTML 中提取选集列表
-        let playlist_bvids = parse_playlist_from_html(&html);
-
-        if playlist_bvids.len() > 1 {
-            // 找到合集，获取每个视频的标题
-            let mut playlist_videos = Vec::new();
-            for (i, pbvid) in playlist_bvids.iter().enumerate() {
-                match self.get_video_info(pbvid).await {
-                    Ok(info) => {
-                        playlist_videos.push(PlaylistVideo {
-                            bvid: pbvid.clone(),
-                            cid: info.cid,
-                            title: info.title,
-                            index: (i + 1) as i32,
-                        });
-                    }
-                    Err(_) => {
-                        // 如果获取失败，使用默认标题
-                        playlist_videos.push(PlaylistVideo {
-                            bvid: pbvid.clone(),
-                            cid: 0,
-                            title: format!("选集 {}", i + 1),
-                            index: (i + 1) as i32,
-                        });
-                    }
-                }
+        // 2) 尝试结构化 ugc_season（仅当前 section）
+        if let Some(ugc_season) = view_data["ugc_season"].as_object() {
+            let ugc_season_value = serde_json::Value::Object(ugc_season.clone());
+            if let Some(collection) = self
+                .build_collection_from_ugc_season(
+                    &ugc_season_value,
+                    bvid,
+                    view_data["title"].as_str().unwrap_or(&video_info.title),
+                )
+                .await?
+            {
+                return Ok(collection);
             }
-
-            let collection_title = extract_collection_title_from_html(&html);
-            return Ok(PlaylistResult {
-                r#type: "collection".to_string(),
-                title: collection_title,
-                videos: playlist_videos,
-            });
         }
 
-        // 单个视频
+        // 3) compat 模式：HTML __INITIAL_STATE__ 兜底（不做全页 href 扫描）
+        if mode == CollectionMode::Compat {
+            if let Some(collection) = self
+                .build_collection_from_html_initial_state(bvid, &video_info.title)
+                .await?
+            {
+                return Ok(collection);
+            }
+        }
+
+        // 4) 单视频
         Ok(PlaylistResult {
             r#type: "single".to_string(),
             title: video_info.title.clone(),
@@ -191,6 +226,136 @@ impl BilibiliClient {
                 index: 1,
             }],
         })
+    }
+
+    async fn build_collection_from_html_initial_state(
+        &self,
+        bvid: &str,
+        default_title: &str,
+    ) -> Result<Option<PlaylistResult>> {
+        let html = self.fetch_video_page_html(bvid).await?;
+        let initial_state = match extract_initial_state_json(&html) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let ugc_season = initial_state
+            .get("ugc_season")
+            .or_else(|| initial_state.get("videoData").and_then(|v| v.get("ugc_season")));
+
+        let Some(ugc_season) = ugc_season else {
+            return Ok(None);
+        };
+
+        self.build_collection_from_ugc_season(ugc_season, bvid, default_title)
+            .await
+    }
+
+    async fn fetch_video_page_html(&self, bvid: &str) -> Result<String> {
+        let url = format!("https://www.bilibili.com/video/{}", bvid);
+        let mut req = self
+            .client
+            .get(&url)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            )
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .header("Accept-Encoding", "gzip, deflate, br")
+            .header("Referer", "https://www.bilibili.com")
+            .header("Connection", "keep-alive");
+
+        if let Some(ref sessdata) = self.sessdata {
+            req = req.header("Cookie", format!("SESSDATA={}", sessdata));
+        }
+
+        let resp = req.send().await?;
+        Ok(resp.text().await?)
+    }
+
+    async fn build_collection_from_ugc_season(
+        &self,
+        ugc_season: &serde_json::Value,
+        current_bvid: &str,
+        default_title: &str,
+    ) -> Result<Option<PlaylistResult>> {
+        let sections = ugc_season
+            .get("sections")
+            .and_then(|v| v.as_array())
+            .filter(|arr| !arr.is_empty());
+
+        let Some(sections) = sections else {
+            return Ok(None);
+        };
+
+        let current_section = sections
+            .iter()
+            .find(|section| section_contains_bvid(section, current_bvid));
+
+        let Some(current_section) = current_section else {
+            return Ok(None);
+        };
+
+        let episodes = current_section
+            .get("episodes")
+            .and_then(|v| v.as_array())
+            .filter(|arr| !arr.is_empty());
+
+        let Some(episodes) = episodes else {
+            return Ok(None);
+        };
+
+        let mut seen = HashSet::new();
+        let mut videos = Vec::new();
+
+        for episode in episodes {
+            let Some(episode_bvid) = extract_episode_bvid(episode) else {
+                continue;
+            };
+            if !seen.insert(episode_bvid.clone()) {
+                continue;
+            }
+
+            // cid 优先级: episode.page.cid -> episode.cid -> get_video_info 回查
+            let cid = match extract_episode_cid(episode) {
+                Some(v) => v,
+                None => match self.get_video_info(&episode_bvid).await {
+                    Ok(info) => info.cid,
+                    Err(_) => continue,
+                },
+            };
+
+            let title = extract_episode_title(episode)
+                .unwrap_or_else(|| format!("选集 {}", videos.len() + 1));
+
+            videos.push(PlaylistVideo {
+                bvid: episode_bvid,
+                cid,
+                title,
+                index: (videos.len() + 1) as i32,
+            });
+        }
+
+        if videos.len() <= 1 {
+            return Ok(None);
+        }
+
+        let collection_title = ugc_season
+            .get("title")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(default_title)
+            .to_string();
+
+        Ok(Some(PlaylistResult {
+            r#type: "collection".to_string(),
+            title: collection_title,
+            videos,
+        }))
     }
 }
 
@@ -207,47 +372,102 @@ pub struct PlaylistResult {
     pub videos: Vec<PlaylistVideo>,
 }
 
-/// 从 HTML 中提取选集列表
-fn parse_playlist_from_html(html: &str) -> Vec<String> {
-    let mut bv_ids = vec![];
-    let mut seen = std::collections::HashSet::new();
+fn extract_initial_state_json(html: &str) -> Option<serde_json::Value> {
+    let marker = "window.__INITIAL_STATE__=";
+    let start = html.find(marker)? + marker.len();
+    let tail = &html[start..];
 
-    // 解析 `<a>` 标签中的 href，匹配 BV 开头的 ID
-    let re = regex::Regex::new(r#"href="/video/(BV[a-zA-Z0-9]+)"#).unwrap();
-    for caps in re.captures_iter(html) {
-        if let Some(bvid) = caps.get(1) {
-            let bvid_str = bvid.as_str().to_string();
-            if !seen.contains(&bvid_str) {
-                seen.insert(bvid_str.clone());
-                bv_ids.push(bvid_str);
-            }
-        }
-    }
+    let end = tail
+        .find(";(function")
+        .or_else(|| tail.find(";</script>"))
+        .or_else(|| tail.find('\n'))?;
 
-    // 限制数量，避免太多
-    bv_ids.truncate(100);
-    bv_ids
+    let json_text = tail[..end].trim();
+    serde_json::from_str::<serde_json::Value>(json_text).ok()
 }
 
-/// 从 HTML 中提取合集标题
-fn extract_collection_title_from_html(html: &str) -> String {
-    // 尝试从 title 标签提取
-    let re = regex::Regex::new(r#"<title[^>]*>([^<]+)</title>"#).unwrap();
-    if let Some(caps) = re.captures(html) {
-        if let Some(title_match) = caps.get(1) {
-            let title = title_match.as_str();
-            // 格式: "主标题|副标题" 或 "主标题 - 副标题"
-            if let Some(pos) = title.find('|') {
-                return title[..pos].trim().to_string();
-            }
-            if let Some(pos) = title.find('-') {
-                return title[..pos].trim().to_string();
-            }
-            return title.trim().to_string();
-        }
+fn section_contains_bvid(section: &serde_json::Value, bvid: &str) -> bool {
+    section
+        .get("episodes")
+        .and_then(|v| v.as_array())
+        .map(|episodes| {
+            episodes
+                .iter()
+                .any(|episode| extract_episode_bvid(episode).as_deref() == Some(bvid))
+        })
+        .unwrap_or(false)
+}
+
+fn extract_episode_bvid(episode: &serde_json::Value) -> Option<String> {
+    episode
+        .get("bvid")
+        .and_then(|v| v.as_str())
+        .or_else(|| episode.get("arc").and_then(|v| v.get("bvid")).and_then(|v| v.as_str()))
+        .map(|v| v.to_string())
+}
+
+fn extract_episode_title(episode: &serde_json::Value) -> Option<String> {
+    episode
+        .get("title")
+        .and_then(|v| v.as_str())
+        .or_else(|| episode.get("arc").and_then(|v| v.get("title")).and_then(|v| v.as_str()))
+        .map(|v| v.to_string())
+}
+
+fn extract_episode_cid(episode: &serde_json::Value) -> Option<i64> {
+    episode
+        .get("page")
+        .and_then(|v| v.get("cid"))
+        .and_then(|v| v.as_i64())
+        .or_else(|| episode.get("cid").and_then(|v| v.as_i64()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_extract_initial_state_json() {
+        let html = r#"<script>window.__INITIAL_STATE__={"videoData":{"ugc_season":{"title":"合集A"}}};(function(){})</script>"#;
+        let parsed = extract_initial_state_json(html).expect("should parse");
+        assert_eq!(
+            parsed["videoData"]["ugc_season"]["title"].as_str(),
+            Some("合集A")
+        );
     }
 
-    "视频合集".to_string()
+    #[test]
+    fn should_match_section_by_current_bvid() {
+        let section = serde_json::json!({
+            "episodes": [
+                { "bvid": "BV111" },
+                { "arc": { "bvid": "BV222" } }
+            ]
+        });
+        assert!(section_contains_bvid(&section, "BV222"));
+        assert!(!section_contains_bvid(&section, "BV333"));
+    }
+
+    #[test]
+    fn should_extract_episode_cid_by_priority() {
+        let episode = serde_json::json!({
+            "cid": 100,
+            "page": { "cid": 200 }
+        });
+        assert_eq!(extract_episode_cid(&episode), Some(200));
+
+        let episode2 = serde_json::json!({ "cid": 300 });
+        assert_eq!(extract_episode_cid(&episode2), Some(300));
+    }
+
+    #[test]
+    fn should_extract_episode_bvid_and_title() {
+        let episode = serde_json::json!({
+            "arc": { "bvid": "BVabc", "title": "标题1" }
+        });
+        assert_eq!(extract_episode_bvid(&episode).as_deref(), Some("BVabc"));
+        assert_eq!(extract_episode_title(&episode).as_deref(), Some("标题1"));
+    }
 }
 
 /// 播放URL结果
