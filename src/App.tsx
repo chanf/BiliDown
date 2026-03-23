@@ -74,7 +74,9 @@ function App() {
 
   const [selectedVideos, setSelectedVideos] = useState<Set<number>>(new Set());
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
+  const [mainTab, setMainTab] = useState<"parse" | "download">("parse");
   const [downloadTab, setDownloadTab] = useState<"active" | "completed">("active");
+  const [clearingCompleted, setClearingCompleted] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
@@ -98,6 +100,7 @@ function App() {
     try {
       const res = await invoke<ParseResult>("parse_url", { url: targetUrl });
       setResult(res);
+      setMainTab("parse");
 
       if (res.videos.length > 0) {
         setSelectedVideos(new Set(res.videos.map(v => v.cid)));
@@ -219,6 +222,7 @@ function App() {
       const downloadResult = await invoke<string>("download", { videos });
       console.log(downloadResult);
       setError("");
+      setMainTab("download");
     } catch (e) {
       setError(String(e));
     }
@@ -246,6 +250,47 @@ function App() {
       setDownloadTasks(prev => prev.filter(t => t.task_id !== taskId));
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  async function clearCompletedTasks() {
+    if (completedDownloadTasks.length === 0 || clearingCompleted) {
+      return;
+    }
+
+    setClearingCompleted(true);
+    try {
+      const completedIds = completedDownloadTasks.map((task) => task.task_id);
+      const results = await Promise.allSettled(
+        completedIds.map((taskId) =>
+          invoke("delete_download", { taskId, cleanFiles: false })
+        )
+      );
+
+      const successIds = new Set<string>();
+      let failedCount = 0;
+
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          successIds.add(completedIds[index]);
+        } else {
+          failedCount += 1;
+        }
+      });
+
+      if (successIds.size > 0) {
+        setDownloadTasks((prev) =>
+          prev.filter((task) => !successIds.has(task.task_id))
+        );
+      }
+
+      if (failedCount > 0) {
+        setError(`清空列表时有 ${failedCount} 个任务失败，请重试`);
+      } else {
+        setError("");
+      }
+    } finally {
+      setClearingCompleted(false);
     }
   }
 
@@ -312,6 +357,7 @@ function App() {
   );
   const displayDownloadTasks =
     downloadTab === "active" ? activeDownloadTasks : completedDownloadTasks;
+  const parseVideoCount = result?.videos.length ?? 0;
 
   return (
     <div className="container">
@@ -375,143 +421,182 @@ function App() {
           {error && <p className="error">{error}</p>}
         </section>
 
-        {result && (
-          <section className="result-section">
-            <div className="result-header">
-              <div className="result-title">
-                <p className="title">{result.title}</p>
-              </div>
-              <div className="selection-info">
-                <span>已选 {selectedVideos.size} / {result.videos.length}</span>
-              </div>
-            </div>
+        <section className="main-tabs">
+          <button
+            type="button"
+            className={`main-tab-btn ${mainTab === "parse" ? "active" : ""}`}
+            onClick={() => setMainTab("parse")}
+          >
+            解析列表
+            <span className="main-tab-count">{parseVideoCount}</span>
+          </button>
+          <button
+            type="button"
+            className={`main-tab-btn ${mainTab === "download" ? "active" : ""}`}
+            onClick={() => setMainTab("download")}
+          >
+            下载列表
+            <span className="main-tab-count">{downloadTasks.length}</span>
+          </button>
+        </section>
 
-            <div className="video-list">
-              <div className="video-list-header">
-                <label className="select-all">
-                  <input
-                    type="checkbox"
-                    checked={result.videos.length > 0 && selectedVideos.size === result.videos.length}
-                    onChange={handleSelectAll}
-                  />
-                  <span>全选</span>
-                </label>
+        {mainTab === "parse" && (
+          result ? (
+            <section className="result-section">
+              <div className="result-header">
+                <div className="result-title">
+                  <p className="title">{result.title}</p>
+                </div>
+                <div className="selection-info">
+                  <span>已选 {selectedVideos.size} / {result.videos.length}</span>
+                </div>
               </div>
 
-              <div className="video-items">
-                {result.videos.map((video) => (
-                  <div key={video.cid} className="video-item">
+              <div className="video-list">
+                <div className="video-list-header">
+                  <label className="select-all">
                     <input
                       type="checkbox"
-                      id={`video-${video.cid}`}
-                      checked={selectedVideos.has(video.cid)}
-                      onChange={() => handleVideoSelect(video.cid)}
+                      checked={result.videos.length > 0 && selectedVideos.size === result.videos.length}
+                      onChange={handleSelectAll}
                     />
-                    <span className="index">{video.index}.</span>
-                    <label htmlFor={`video-${video.cid}`} className="title">
-                      {video.title}
-                    </label>
-                  </div>
-                ))}
-              </div>
-            </div>
+                    <span>全选</span>
+                  </label>
+                </div>
 
-            <button
-              className="btn-primary"
-              onClick={handleDownload}
-              disabled={selectedVideos.size === 0}
-            >
-              下载已选中的 {selectedVideos.size} 个视频
-            </button>
-          </section>
+                <div className="video-items">
+                  {result.videos.map((video) => (
+                    <div key={video.cid} className="video-item">
+                      <input
+                        type="checkbox"
+                        id={`video-${video.cid}`}
+                        checked={selectedVideos.has(video.cid)}
+                        onChange={() => handleVideoSelect(video.cid)}
+                      />
+                      <span className="index">{video.index}.</span>
+                      <label htmlFor={`video-${video.cid}`} className="title">
+                        {video.title}
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                className="btn-primary"
+                onClick={handleDownload}
+                disabled={selectedVideos.size === 0}
+              >
+                下载已选中的 {selectedVideos.size} 个视频
+              </button>
+            </section>
+          ) : (
+            <section className="result-section">
+              <p className="empty">暂无解析列表，请先输入 URL 并点击解析</p>
+            </section>
+          )
         )}
 
-        <section className="download-section">
-          <div className="download-header">
-            <h2>📥 下载列表</h2>
-            <div className="download-tabs">
-              <button
-                type="button"
-                className={`download-tab-btn ${downloadTab === "active" ? "active" : ""}`}
-                onClick={() => setDownloadTab("active")}
-              >
-                下载中
-                <span className="download-tab-count">{activeDownloadTasks.length}</span>
-              </button>
-              <button
-                type="button"
-                className={`download-tab-btn ${downloadTab === "completed" ? "active" : ""}`}
-                onClick={() => setDownloadTab("completed")}
-              >
-                已下载
-                <span className="download-tab-count">{completedDownloadTasks.length}</span>
-              </button>
+        {mainTab === "download" && (
+          <section className="download-section">
+            <div className="download-header">
+              <h2>📥 下载列表</h2>
+              <div className="download-tabs">
+                <button
+                  type="button"
+                  className={`download-tab-btn ${downloadTab === "active" ? "active" : ""}`}
+                  onClick={() => setDownloadTab("active")}
+                >
+                  下载中
+                  <span className="download-tab-count">{activeDownloadTasks.length}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`download-tab-btn ${downloadTab === "completed" ? "active" : ""}`}
+                  onClick={() => setDownloadTab("completed")}
+                >
+                  已下载
+                  <span className="download-tab-count">{completedDownloadTasks.length}</span>
+                </button>
+              </div>
             </div>
-          </div>
-          {displayDownloadTasks.length === 0 ? (
-            <p className="empty">
-              {downloadTab === "active" ? "暂无下载中任务" : "暂无已下载任务"}
-            </p>
-          ) : (
-            <div className="download-list">
-              {displayDownloadTasks.map((task) => {
-                const statusText = getStatusText(task.status);
-                const errorText = getErrorFromStatus(task.status) || task.error;
-                return (
-                  <div key={task.task_id} className="download-item">
-                    <div className="download-info">
-                      <span className="download-title">{task.title}</span>
-                      <span className={`download-status status-${statusText.toLowerCase()}`}>
-                        {statusText === 'Pending' && '等待中'}
-                        {statusText === 'Downloading' && '下载中'}
-                        {statusText === 'Paused' && '已暂停'}
-                        {statusText === 'Merging' && '合并中'}
-                        {statusText === 'Completed' && '已完成'}
-                        {statusText === 'Failed' && '失败'}
-                      </span>
-                    </div>
-
-                    {(statusText === 'Downloading' || statusText === 'Paused') && (
-                      <div className="download-progress">
-                        <div className="progress-bar">
-                          <div
-                            className="progress-fill"
-                            style={{ width: `${(task.video_progress + task.audio_progress) / 2 * 100}%` }}
-                          />
-                        </div>
-                        <span className="progress-text">
-                          {Math.round((task.video_progress + task.audio_progress) / 2 * 100)}%
+            {displayDownloadTasks.length === 0 ? (
+              <p className="empty">
+                {downloadTab === "active" ? "暂无下载中任务" : "暂无已下载任务"}
+              </p>
+            ) : (
+              <div className="download-list">
+                {displayDownloadTasks.map((task) => {
+                  const statusText = getStatusText(task.status);
+                  const errorText = getErrorFromStatus(task.status) || task.error;
+                  return (
+                    <div key={task.task_id} className="download-item">
+                      <div className="download-info">
+                        <span className="download-title">{task.title}</span>
+                        <span className={`download-status status-${statusText.toLowerCase()}`}>
+                          {statusText === 'Pending' && '等待中'}
+                          {statusText === 'Downloading' && '下载中'}
+                          {statusText === 'Paused' && '已暂停'}
+                          {statusText === 'Merging' && '合并中'}
+                          {statusText === 'Completed' && '已完成'}
+                          {statusText === 'Failed' && '失败'}
                         </span>
                       </div>
-                    )}
 
-                    <div className="download-actions">
-                      {statusText === 'Downloading' && (
-                        <button className="btn-action btn-pause" onClick={() => pauseTask(task.task_id)}>
-                          暂停
-                        </button>
+                      {(statusText === 'Downloading' || statusText === 'Paused') && (
+                        <div className="download-progress">
+                          <div className="progress-bar">
+                            <div
+                              className="progress-fill"
+                              style={{ width: `${(task.video_progress + task.audio_progress) / 2 * 100}%` }}
+                            />
+                          </div>
+                          <span className="progress-text">
+                            {Math.round((task.video_progress + task.audio_progress) / 2 * 100)}%
+                          </span>
+                        </div>
                       )}
-                      {statusText === 'Paused' && (
-                        <button className="btn-action btn-resume" onClick={() => resumeTask(task.task_id)}>
-                          恢复
-                        </button>
-                      )}
-                      {(statusText === 'Pending' || statusText === 'Downloading' || statusText === 'Paused' || statusText === 'Failed') && (
-                        <button className="btn-action btn-delete" onClick={() => deleteTask(task.task_id)}>
-                          删除
-                        </button>
+
+                      <div className="download-actions">
+                        {statusText === 'Downloading' && (
+                          <button className="btn-action btn-pause" onClick={() => pauseTask(task.task_id)}>
+                            暂停
+                          </button>
+                        )}
+                        {statusText === 'Paused' && (
+                          <button className="btn-action btn-resume" onClick={() => resumeTask(task.task_id)}>
+                            恢复
+                          </button>
+                        )}
+                        {(statusText === 'Pending' || statusText === 'Downloading' || statusText === 'Paused' || statusText === 'Failed') && (
+                          <button className="btn-action btn-delete" onClick={() => deleteTask(task.task_id)}>
+                            删除
+                          </button>
+                        )}
+                      </div>
+
+                      {statusText === 'Failed' && (
+                        <p className="download-error">{errorText || '下载失败'}</p>
                       )}
                     </div>
-
-                    {statusText === 'Failed' && (
-                      <p className="download-error">{errorText || '下载失败'}</p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
+                  );
+                })}
+              </div>
+            )}
+            {downloadTab === "completed" && displayDownloadTasks.length > 0 && (
+              <div className="download-footer-actions">
+                <button
+                  type="button"
+                  className="btn-clear-completed"
+                  onClick={clearCompletedTasks}
+                  disabled={clearingCompleted}
+                >
+                  {clearingCompleted ? "清空中..." : "清空列表"}
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         {showConfig && (
           <div className="modal-overlay" onClick={() => setShowConfig(false)}>
