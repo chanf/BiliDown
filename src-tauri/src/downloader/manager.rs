@@ -236,7 +236,7 @@ async fn run_download_pipeline(
     )
     .get_or_install_ffmpeg()
     .await
-    .unwrap_or_else(|_| "ffmpeg".to_string());
+    .context("未找到可用 FFmpeg，请检查网络或先手动安装 ffmpeg")?;
 
     let output_dir = PathBuf::from(&request.config.save_path);
     tokio::fs::create_dir_all(&output_dir).await?;

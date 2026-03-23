@@ -34,11 +34,18 @@ impl FFmpegDetector {
         }
 
         let local_ffmpeg = self.app_dir.join("bin").join("ffmpeg");
-        if local_ffmpeg.exists() {
+        if self.verify_ffmpeg_path(&local_ffmpeg).await {
             return Ok(local_ffmpeg.to_string_lossy().to_string());
         }
 
         self.download_and_install_ffmpeg().await?;
+
+        if !self.verify_ffmpeg_path(&local_ffmpeg).await {
+            anyhow::bail!(
+                "FFmpeg 安装后仍不可用: {}",
+                local_ffmpeg.to_string_lossy()
+            );
+        }
 
         Ok(local_ffmpeg.to_string_lossy().to_string())
     }
@@ -47,11 +54,9 @@ impl FFmpegDetector {
         let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
 
         let url = match (os, arch) {
-            ("macos", "aarch64") => {
-                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-macos-arm64.tar.xz"
-            }
-            ("macos", "x86_64") => {
-                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-macos-x64.tar.xz"
+            // BtbN 当前已不再提供 macOS 资产，改用 evermeet 通用 zip
+            ("macos", "aarch64") | ("macos", "x86_64") => {
+                "https://evermeet.cx/ffmpeg/getrelease/zip"
             }
             ("linux", "x86_64") => {
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
@@ -66,6 +71,9 @@ impl FFmpegDetector {
         tokio::fs::create_dir_all(&bin_dir).await?;
 
         let response = self.client.get(url).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("下载 FFmpeg 失败: {} ({})", url, response.status());
+        }
         let bytes = response.bytes().await?;
 
         let is_zip = url.ends_with(".zip");
@@ -112,11 +120,11 @@ impl FFmpegDetector {
             let outpath = bin_dir.join(file.name());
 
             if file.name().ends_with('/') {
-                tokio::fs::create_dir_all(&outpath).await?;
+                std::fs::create_dir_all(&outpath)?;
             } else {
                 if let Some(p) = outpath.parent() {
                     if !p.exists() {
-                        tokio::fs::create_dir_all(p).await?;
+                        std::fs::create_dir_all(p)?;
                     }
                 }
                 let mut outfile = std::fs::File::create(&outpath)?;
@@ -129,42 +137,112 @@ impl FFmpegDetector {
         Ok(())
     }
 
-    #[cfg(not(any(unix, windows)))]
-    async fn extract_tar(&self, _archive_path: &Path, _bin_dir: &Path) -> Result<()> {
-        anyhow::bail!("不支持的平台")
-    }
-
     #[cfg(not(windows))]
-    async fn extract_zip(&self, _archive_path: &Path, _bin_dir: &Path) -> Result<()> {
-        anyhow::bail!("不支持的平台")
+    async fn extract_zip(&self, archive_path: &Path, bin_dir: &Path) -> Result<()> {
+        let file = std::fs::File::open(archive_path)?;
+        let mut archive = zip::ZipArchive::new(file)?;
+
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let outpath = bin_dir.join(file.name());
+
+            if file.name().ends_with('/') {
+                std::fs::create_dir_all(&outpath)?;
+            } else {
+                if let Some(p) = outpath.parent() {
+                    if !p.exists() {
+                        std::fs::create_dir_all(p)?;
+                    }
+                }
+                let mut outfile = std::fs::File::create(&outpath)?;
+                std::io::copy(&mut file, &mut outfile)?;
+            }
+        }
+
+        self.find_and_move_ffmpeg(bin_dir).await?;
+
+        Ok(())
     }
 
     async fn find_and_move_ffmpeg(&self, bin_dir: &Path) -> Result<()> {
-        let mut entries = tokio::fs::read_dir(bin_dir).await?;
         let ffmpeg_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
         let ffmpeg_path = bin_dir.join(ffmpeg_name);
 
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
+        let found = self.find_ffmpeg_recursively(bin_dir, ffmpeg_name)?;
+        let source_path = found.ok_or_else(|| anyhow::anyhow!("压缩包中未找到 ffmpeg 可执行文件"))?;
 
-            if path.is_dir() {
-                let potential_ffmpeg = path.join(ffmpeg_name);
-                if potential_ffmpeg.exists() {
-                    tokio::fs::rename(&potential_ffmpeg, &ffmpeg_path).await?;
-                    break;
+        if source_path != ffmpeg_path {
+            match tokio::fs::rename(&source_path, &ffmpeg_path).await {
+                Ok(_) => {}
+                Err(_) => {
+                    tokio::fs::copy(&source_path, &ffmpeg_path).await?;
                 }
             }
         }
 
         #[cfg(unix)]
         {
-            tokio::process::Command::new("chmod")
+            let output = tokio::process::Command::new("chmod")
                 .arg("+x")
                 .arg(&ffmpeg_path)
                 .output()
                 .await?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "设置 ffmpeg 可执行权限失败: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+
+        if !self.verify_ffmpeg_path(&ffmpeg_path).await {
+            anyhow::bail!(
+                "ffmpeg 可执行文件校验失败: {}",
+                ffmpeg_path.to_string_lossy()
+            );
         }
 
         Ok(())
+    }
+
+    fn find_ffmpeg_recursively(&self, root: &Path, ffmpeg_name: &str) -> Result<Option<PathBuf>> {
+        let mut stack = vec![root.to_path_buf()];
+
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                if path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == ffmpeg_name)
+                    .unwrap_or(false)
+                {
+                    return Ok(Some(path));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn verify_ffmpeg_path(&self, path: &Path) -> bool {
+        if !path.exists() {
+            return false;
+        }
+
+        match tokio::process::Command::new(path)
+            .arg("-version")
+            .output()
+            .await
+        {
+            Ok(output) => output.status.success(),
+            Err(_) => false,
+        }
     }
 }
