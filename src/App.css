@@ -139,6 +139,14 @@ main {
   background: var(--primary-hover);
 }
 
+.input-group .btn-paste-parse {
+  background: #34a853;
+}
+
+.input-group .btn-paste-parse:hover:not(:disabled) {
+  background: #2f944a;
+}
+
 .input-group button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -401,6 +409,11 @@ footer {
   align-items: center;
   max-width: 800px;
   margin: 0 auto;
+}
+
+.footer-buttons {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .config-btn {

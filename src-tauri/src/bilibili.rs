@@ -261,14 +261,55 @@ pub struct PlayUrlResult {
 }
 
 impl BilibiliClient {
-    /// 获取视频播放URL
+    /// 质量降级列表（从高到低）
+    const QUALITY_FALLBACK: &[i32] = &[120, 116, 112, 80, 64, 32];
+
+    /// 获取视频播放URL（支持质量自动降级）
     pub async fn get_play_url(&self, bvid: &str, cid: i64, quality: i32) -> Result<PlayUrlResult> {
+        // 先尝试请求的质量
+        match self.try_get_play_url(bvid, cid, quality).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                // 如果是 403 错误或没有视频流，尝试降级
+                if e.to_string().contains("403") || e.to_string().contains("未找到视频流") {
+                    let fallback_qualities: Vec<i32> = Self::QUALITY_FALLBACK
+                        .iter()
+                        .filter(|&&q| q < quality)
+                        .copied()
+                        .collect();
+
+                    for fallback_quality in fallback_qualities {
+                        match self.try_get_play_url(bvid, cid, fallback_quality).await {
+                            Ok(result) => {
+                                eprintln!("质量 {} 不可用，已自动降级到 {}", quality, fallback_quality);
+                                return Ok(result);
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+
+                    anyhow::bail!("所有质量等级都无法下载: {}", e);
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    /// 尝试获取指定质量的播放URL
+    async fn try_get_play_url(&self, bvid: &str, cid: i64, quality: i32) -> Result<PlayUrlResult> {
         let url = format!(
             "https://api.bilibili.com/x/player/playurl?bvid={}&cid={}&qn={}&fnval=16&fourk=1",
             bvid, cid, quality
         );
 
-        let mut req = self.client.get(&url);
+        let mut req = self.client.get(&url)
+            .header("Referer", "https://www.bilibili.com")
+            .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Origin", "https://www.bilibili.com")
+            .header("Sec-Fetch-Site", "same-site")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Accept", "application/json, text/plain, */*");
 
         if let Some(ref sessdata) = self.sessdata {
             req = req.header("Cookie", format!("SESSDATA={}", sessdata));
@@ -286,22 +327,26 @@ impl BilibiliClient {
 
         if let Some(video) = dash["video"].as_array().and_then(|v| v.first()) {
             let video_url = video["baseUrl"].as_str().unwrap().to_string();
-            let video_bandwidth = video["bandwidth"].as_i64().unwrap_or(0) as u64;
 
             if let Some(audio) = dash["audio"].as_array().and_then(|a| a.first()) {
                 let audio_url = audio["baseUrl"].as_str().unwrap().to_string();
-                let audio_bandwidth = audio["bandwidth"].as_i64().unwrap_or(0) as u64;
+
+                // 不预先获取文件大小，改为在下载时动态获取
+                // 不同 CDN 节点可能返回不同大小，预先获取不准确
+                let video_size = 0u64;
+                let audio_size = 0u64;
 
                 return Ok(PlayUrlResult {
                     video_url,
                     audio_url,
                     video_quality: data["quality"].as_i64().unwrap() as i32,
-                    video_size: video_bandwidth,
-                    audio_size: audio_bandwidth,
+                    video_size,
+                    audio_size,
                 });
             }
         }
 
         anyhow::bail!("未找到视频流");
     }
+
 }

@@ -7,40 +7,6 @@ pub struct BilibiliLogin {
     client: Client,
 }
 
-/// QR 码响应
-#[derive(Debug, Deserialize)]
-struct QrcodeResponse {
-    code: i32,
-    data: QrcodeData,
-}
-
-#[derive(Debug, Deserialize)]
-struct QrcodeData {
-    url: String,
-    qrcode_key: String,
-}
-
-/// 登录状态轮询响应
-#[derive(Debug, Deserialize)]
-struct PollResponse {
-    code: i32,
-    data: PollData,
-}
-
-#[derive(Debug, Deserialize)]
-struct PollData {
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    refresh_token: String,
-    #[serde(default)]
-    timestamp: i64,
-    #[serde(default)]
-    code: i32,
-    #[serde(default)]
-    message: String,
-}
-
 impl BilibiliLogin {
     pub fn new() -> Self {
         Self {
@@ -86,12 +52,20 @@ impl BilibiliLogin {
                     Ok(json) => {
                         let code = json["data"]["code"].as_i64().unwrap_or(-1);
                         match code {
-                            0 => LoginStatus::Waiting,
-                            86038 => LoginStatus::Expired,
-                            86090 => LoginStatus::Success {
-                                url: json["data"]["url"].as_str().unwrap().to_string(),
-                                refresh_token: json["data"]["refresh_token"].as_str().unwrap().to_string(),
+                            // 0: 登录成功
+                            0 => LoginStatus::Success {
+                                url: json["data"]["url"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                refresh_token: json["data"]["refresh_token"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string(),
                             },
+                            86038 => LoginStatus::Expired,
+                            // 86101: 未扫码, 86090: 已扫码未确认
+                            86101 | 86090 => LoginStatus::Waiting,
                             _ => LoginStatus::Failed,
                         }
                     }

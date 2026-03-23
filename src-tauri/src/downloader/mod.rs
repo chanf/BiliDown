@@ -1,18 +1,19 @@
 pub mod manager;
-pub mod task;
 pub mod chunked;
-pub mod resume;
 pub mod merger;
 
 pub use manager::DownloadManager;
-pub use task::DownloadTaskRunner;
-pub use chunked::{ChunkedDownloader, ProgressUpdate, ChunkInfo};
-pub use resume::{ResumeManager, ResumeMetadata};
+pub use manager::StartDownloadRequest;
+pub use chunked::ChunkedDownloader;
 pub use merger::VideoMerger;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{
+    Arc,
+    Mutex,
+    atomic::AtomicBool,
+};
 use tokio::task::JoinHandle;
 
 /// 任务状态
@@ -65,6 +66,7 @@ impl Default for DownloadConfig {
             save_path: dirs::home_dir()
                 .unwrap()
                 .join("Movies")
+                .join("DiliDown")
                 .to_string_lossy()
                 .to_string(),
             concurrent_connections: 4,
@@ -80,7 +82,21 @@ impl Default for DownloadConfig {
 pub struct DownloadState {
     pub tasks: Mutex<HashMap<String, DownloadTask>>,
     pub active_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
+    pub controls: Mutex<HashMap<String, TaskControl>>,
     pub config: Mutex<DownloadConfig>,
-    pub ffmpeg_path: Mutex<Option<String>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskControl {
+    pub paused: Arc<AtomicBool>,
+    pub cancelled: Arc<AtomicBool>,
+}
+
+impl TaskControl {
+    pub fn new() -> Self {
+        Self {
+            paused: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}

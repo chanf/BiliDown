@@ -167,16 +167,4 @@ impl FFmpegDetector {
 
         Ok(())
     }
-
-    pub async fn verify_ffmpeg(&self, path: &str) -> bool {
-        if let Ok(output) = tokio::process::Command::new(path)
-            .arg("-version")
-            .output()
-            .await
-        {
-            output.status.success()
-        } else {
-            false
-        }
-    }
 }

@@ -22,7 +22,7 @@ interface DownloadTask {
   cid: number;
   title: string;
   part_title?: string;
-  status: 'Pending' | 'Downloading' | 'Paused' | 'Merging' | 'Completed' | 'Failed';
+  status: Record<string, unknown> | string;
   video_progress: number;
   audio_progress: number;
   speed: number;
@@ -38,6 +38,28 @@ interface DownloadConfig {
   quality: number;
   max_retry: number;
   timeout: number;
+}
+
+// Helper function to extract status string from Rust enum serialization
+function getStatusText(status: Record<string, unknown> | string): string {
+  if (typeof status === 'string') {
+    return status;
+  }
+  // Handle Rust enum serialization like {"Pending": null} or {"Failed": "message"}
+  const keys = Object.keys(status);
+  if (keys.length === 1) {
+    return keys[0];
+  }
+  return 'Pending';
+}
+
+function getErrorFromStatus(status: Record<string, unknown> | string): string | undefined {
+  if (typeof status === 'object' && status !== null) {
+    if ('Failed' in status && typeof status.Failed === 'string') {
+      return status.Failed;
+    }
+  }
+  return undefined;
 }
 
 function App() {
@@ -62,8 +84,9 @@ function App() {
     timeout: 30,
   });
 
-  async function parseUrl() {
-    if (!url.trim()) {
+  async function parseUrl(inputUrl?: string) {
+    const targetUrl = (inputUrl ?? url).trim();
+    if (!targetUrl) {
       setError("请输入 B 站视频 URL");
       return;
     }
@@ -72,7 +95,7 @@ function App() {
     setError("");
     setSelectedVideos(new Set());
     try {
-      const res = await invoke<ParseResult>("parse_url", { url });
+      const res = await invoke<ParseResult>("parse_url", { url: targetUrl });
       setResult(res);
 
       if (res.videos.length > 0) {
@@ -83,6 +106,20 @@ function App() {
       setResult(null);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handlePasteAndParse() {
+    try {
+      const text = (await invoke<string>("read_clipboard_text")).trim();
+      if (!text) {
+        setError("剪切板为空，请先复制 B 站视频 URL");
+        return;
+      }
+      setUrl(text);
+      await parseUrl(text);
+    } catch (e) {
+      setError(`读取剪切板失败: ${String(e)}`);
     }
   }
 
@@ -97,8 +134,15 @@ function App() {
 
   async function handleLoginClick() {
     if (loggedIn) {
-      setLoggedIn(false);
+      // 退出登录
+      try {
+        await invoke("logout");
+        setLoggedIn(false);
+      } catch (e) {
+        setError(String(e));
+      }
     } else {
+      // 显示二维码登录
       setShowQrcode(true);
       setLoginChecking(true);
       try {
@@ -251,6 +295,14 @@ function App() {
     }
   }
 
+  async function openDownloadDir() {
+    try {
+      await invoke("open_download_dir");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   return (
     <div className="container">
       <header>
@@ -299,8 +351,15 @@ function App() {
               placeholder="粘贴 B 站视频 URL，例如: https://www.bilibili.com/video/BVxxx"
               onKeyDown={(e) => e.key === "Enter" && parseUrl()}
             />
-            <button onClick={parseUrl} disabled={loading}>
+            <button onClick={() => parseUrl()} disabled={loading}>
               {loading ? "解析中..." : "解析"}
+            </button>
+            <button
+              className="btn-paste-parse"
+              onClick={handlePasteAndParse}
+              disabled={loading}
+            >
+              粘贴解析
             </button>
           </div>
           {error && <p className="error">{error}</p>}
@@ -363,57 +422,61 @@ function App() {
             <p className="empty">暂无下载任务</p>
           ) : (
             <div className="download-list">
-              {downloadTasks.map((task) => (
-                <div key={task.task_id} className="download-item">
-                  <div className="download-info">
-                    <span className="download-title">{task.title}</span>
-                    <span className={`download-status status-${task.status.toLowerCase()}`}>
-                      {task.status === 'Pending' && '等待中'}
-                      {task.status === 'Downloading' && '下载中'}
-                      {task.status === 'Paused' && '已暂停'}
-                      {task.status === 'Merging' && '合并中'}
-                      {task.status === 'Completed' && '已完成'}
-                      {task.status === 'Failed' && '失败'}
-                    </span>
-                  </div>
-                  
-                  {(task.status === 'Downloading' || task.status === 'Paused') && (
-                    <div className="download-progress">
-                      <div className="progress-bar">
-                        <div 
-                          className="progress-fill" 
-                          style={{ width: `${(task.video_progress + task.audio_progress) / 2 * 100}%` }}
-                        />
-                      </div>
-                      <span className="progress-text">
-                        {Math.round((task.video_progress + task.audio_progress) / 2 * 100)}%
+              {downloadTasks.map((task) => {
+                const statusText = getStatusText(task.status);
+                const errorText = getErrorFromStatus(task.status) || task.error;
+                return (
+                  <div key={task.task_id} className="download-item">
+                    <div className="download-info">
+                      <span className="download-title">{task.title}</span>
+                      <span className={`download-status status-${statusText.toLowerCase()}`}>
+                        {statusText === 'Pending' && '等待中'}
+                        {statusText === 'Downloading' && '下载中'}
+                        {statusText === 'Paused' && '已暂停'}
+                        {statusText === 'Merging' && '合并中'}
+                        {statusText === 'Completed' && '已完成'}
+                        {statusText === 'Failed' && '失败'}
                       </span>
                     </div>
-                  )}
 
-                  <div className="download-actions">
-                    {task.status === 'Downloading' && (
-                      <button className="btn-action btn-pause" onClick={() => pauseTask(task.task_id)}>
-                        暂停
-                      </button>
+                    {(statusText === 'Downloading' || statusText === 'Paused') && (
+                      <div className="download-progress">
+                        <div className="progress-bar">
+                          <div
+                            className="progress-fill"
+                            style={{ width: `${(task.video_progress + task.audio_progress) / 2 * 100}%` }}
+                          />
+                        </div>
+                        <span className="progress-text">
+                          {Math.round((task.video_progress + task.audio_progress) / 2 * 100)}%
+                        </span>
+                      </div>
                     )}
-                    {task.status === 'Paused' && (
-                      <button className="btn-action btn-resume" onClick={() => resumeTask(task.task_id)}>
-                        恢复
-                      </button>
-                    )}
-                    {(task.status === 'Pending' || task.status === 'Downloading' || task.status === 'Paused' || task.status === 'Failed') && (
-                      <button className="btn-action btn-delete" onClick={() => deleteTask(task.task_id)}>
-                        删除
-                      </button>
+
+                    <div className="download-actions">
+                      {statusText === 'Downloading' && (
+                        <button className="btn-action btn-pause" onClick={() => pauseTask(task.task_id)}>
+                          暂停
+                        </button>
+                      )}
+                      {statusText === 'Paused' && (
+                        <button className="btn-action btn-resume" onClick={() => resumeTask(task.task_id)}>
+                          恢复
+                        </button>
+                      )}
+                      {(statusText === 'Pending' || statusText === 'Downloading' || statusText === 'Paused' || statusText === 'Failed') && (
+                        <button className="btn-action btn-delete" onClick={() => deleteTask(task.task_id)}>
+                          删除
+                        </button>
+                      )}
+                    </div>
+
+                    {statusText === 'Failed' && (
+                      <p className="download-error">{errorText || '下载失败'}</p>
                     )}
                   </div>
-
-                  {task.status === 'Failed' && (
-                    <p className="download-error">{task.error || '下载失败'}</p>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -482,7 +545,10 @@ function App() {
       <footer>
         <div className="footer-content">
           <p>基于 Tauri + React 构建 | 使用前请先登录 B 站账号</p>
-          <button className="config-btn" onClick={() => setShowConfig(true)}>⚙️ 设置</button>
+          <div className="footer-buttons">
+            <button className="config-btn" onClick={openDownloadDir}>📁 打开目录</button>
+            <button className="config-btn" onClick={() => setShowConfig(true)}>⚙️ 设置</button>
+          </div>
         </div>
       </footer>
     </div>
