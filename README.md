@@ -98,6 +98,42 @@ npm run tauri dev
 npm run build
 ```
 
+### macOS 一键打包 DMG
+
+使用项目脚本一键构建 DMG：
+
+```bash
+./scripts/build-dmg.sh
+```
+
+构建完成后在 Finder 中定位产物：
+
+```bash
+./scripts/build-dmg.sh --open
+```
+
+说明：
+- 该脚本内部执行 `npm run tauri build -- --bundles dmg`。
+- 默认输出目录：`src-tauri/target/release/bundle/dmg/`。
+- 脚本会在终端打印本次生成的 DMG 绝对路径。
+
+### 一键清理构建过程文件
+
+使用项目脚本清理构建产物（不删除依赖）：
+
+```bash
+./scripts/clean-build.sh
+```
+
+默认清理目录：
+- `dist`
+- `src-tauri/target`
+- `src-tauri/gen`
+
+说明：
+- 仅清理构建过程文件，不会删除 `node_modules`。
+- 脚本包含路径安全检查，避免误删项目外目录。
+
 ## 使用流程
 
 1. 打开客户端，右上角扫码登录 B 站账号。
