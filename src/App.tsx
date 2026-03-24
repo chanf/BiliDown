@@ -77,6 +77,7 @@ function App() {
   const [mainTab, setMainTab] = useState<"parse" | "download">("parse");
   const [downloadTab, setDownloadTab] = useState<"active" | "completed">("active");
   const [clearingCompleted, setClearingCompleted] = useState(false);
+  const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(new Set());
   const [showConfig, setShowConfig] = useState(false);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
@@ -250,6 +251,50 @@ function App() {
       setDownloadTasks(prev => prev.filter(t => t.task_id !== taskId));
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  async function retryTask(task: DownloadTask) {
+    if (retryingTaskIds.has(task.task_id)) {
+      return;
+    }
+
+    if (!task.bvid?.trim() || !Number.isFinite(task.cid) || task.cid <= 0 || !task.title?.trim()) {
+      setError("任务信息不完整，无法重试");
+      return;
+    }
+
+    setRetryingTaskIds((prev) => {
+      const next = new Set(prev);
+      next.add(task.task_id);
+      return next;
+    });
+
+    try {
+      const video = {
+        bvid: task.bvid,
+        cid: task.cid,
+        title: task.title,
+        part_title: task.part_title,
+      };
+      await invoke<string>("download", { videos: [video] });
+      setError("");
+      setMainTab("download");
+
+      try {
+        await invoke("delete_download", { taskId: task.task_id, cleanFiles: true });
+        setDownloadTasks((prev) => prev.filter((t) => t.task_id !== task.task_id));
+      } catch (deleteError) {
+        setError(`重试已创建新任务，但旧任务清理失败: ${String(deleteError)}`);
+      }
+    } catch (e) {
+      setError(`重试失败: ${String(e)}`);
+    } finally {
+      setRetryingTaskIds((prev) => {
+        const next = new Set(prev);
+        next.delete(task.task_id);
+        return next;
+      });
     }
   }
 
@@ -532,6 +577,7 @@ function App() {
                   const displayTitle = (task.part_title && task.part_title.trim())
                     ? task.part_title
                     : task.title;
+                  const isRetrying = retryingTaskIds.has(task.task_id);
                   return (
                     <div key={task.task_id} className="download-item">
                       <div className="download-info">
@@ -571,8 +617,21 @@ function App() {
                             恢复
                           </button>
                         )}
+                        {statusText === 'Failed' && (
+                          <button
+                            className="btn-action btn-retry"
+                            onClick={() => retryTask(task)}
+                            disabled={isRetrying}
+                          >
+                            {isRetrying ? '重试中...' : '重试'}
+                          </button>
+                        )}
                         {(statusText === 'Pending' || statusText === 'Downloading' || statusText === 'Paused' || statusText === 'Failed') && (
-                          <button className="btn-action btn-delete" onClick={() => deleteTask(task.task_id)}>
+                          <button
+                            className="btn-action btn-delete"
+                            onClick={() => deleteTask(task.task_id)}
+                            disabled={statusText === 'Failed' && isRetrying}
+                          >
                             删除
                           </button>
                         )}

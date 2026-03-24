@@ -666,6 +666,11 @@ footer {
   font-weight: 500;
 }
 
+.btn-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .btn-pause {
   background: var(--warning);
   color: white;
@@ -684,12 +689,21 @@ footer {
   background: var(--primary-hover);
 }
 
+.btn-retry {
+  background: #52c41a;
+  color: white;
+}
+
+.btn-retry:hover:not(:disabled) {
+  background: #389e0d;
+}
+
 .btn-delete {
   background: var(--error);
   color: white;
 }
 
-.btn-delete:hover {
+.btn-delete:hover:not(:disabled) {
   background: #cf1322;
 }
 
