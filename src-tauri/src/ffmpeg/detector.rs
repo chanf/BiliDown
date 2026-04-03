@@ -1,6 +1,7 @@
 use anyhow::Result;
 use reqwest::Client;
 use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 
 pub struct FFmpegDetector {
     app_dir: PathBuf,
@@ -29,6 +30,8 @@ impl FFmpegDetector {
     }
 
     pub async fn detect_bundled_ffmpeg(&self) -> Option<String> {
+        debug!("开始检测内置 FFmpeg");
+
         // 开发环境：尝试多个可能的路径
         let dev_paths = vec![
             std::path::PathBuf::from("src-tauri/resources/bin/ffmpeg"),
@@ -36,41 +39,77 @@ impl FFmpegDetector {
             std::path::PathBuf::from("../resources/bin/ffmpeg"),
         ];
 
-        for path in dev_paths {
-            if self.verify_ffmpeg_path(&path).await {
+        for path in &dev_paths {
+            debug!("检查开发环境路径: {}", path.display());
+            if self.verify_ffmpeg_path(path).await {
+                info!("找到开发环境 FFmpeg: {}", path.display());
                 return Some(path.to_string_lossy().to_string());
             }
         }
 
         // 生产环境：使用应用资源目录
         if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(app_dir) = exe_path.parent() {
-                let bundled_path = app_dir.join("resources").join("bin").join("ffmpeg");
+            debug!("可执行文件路径: {}", exe_path.display());
+
+            // macOS app bundle 结构: BiliDown.app/Contents/MacOS/bilibili-downloader
+            // 资源在: BiliDown.app/Contents/Resources/bin/ffmpeg
+            // 需要从 exe 向上两级到 Contents，然后进入 Resources
+            if let Some(contents_dir) = exe_path.parent().and_then(|p| p.parent()) {
+                let resources_dir = contents_dir.join("Resources"); // 注意 macOS 是大写 R
+                debug!("Resources 目录: {}", resources_dir.display());
+
+                // 尝试多个可能的资源路径
+                let possible_paths = vec![
+                    resources_dir.join("bin").join("ffmpeg"),         // Resources/bin/ffmpeg
+                    resources_dir.join("resources").join("bin").join("ffmpeg"), // Resources/resources/bin/ffmpeg (Tauri 打包结构)
+                ];
+
+                for path in &possible_paths {
+                    debug!("检查生产环境路径: {}", path.display());
+                    if self.verify_ffmpeg_path(path).await {
+                        info!("找到生产环境 FFmpeg: {}", path.display());
+                        return Some(path.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // Linux/Windows fallback: 资源在 exe 同级或父级的 resources 目录
+            if let Some(exe_dir) = exe_path.parent() {
+                let bundled_path = exe_dir.join("resources").join("bin").join("ffmpeg");
+                debug!("检查 fallback 路径: {}", bundled_path.display());
                 if self.verify_ffmpeg_path(&bundled_path).await {
+                    info!("找到 fallback FFmpeg: {}", bundled_path.display());
                     return Some(bundled_path.to_string_lossy().to_string());
                 }
             }
         }
 
+        warn!("未找到内置 FFmpeg");
         None
     }
 
     pub async fn get_or_install_ffmpeg(&self) -> Result<String> {
+        info!("开始获取或安装 FFmpeg");
+
         // 优先使用内置 FFmpeg
         if let Some(bundled_path) = self.detect_bundled_ffmpeg().await {
+            info!("使用内置 FFmpeg: {}", bundled_path);
             return Ok(bundled_path);
         }
 
         // 次选系统 FFmpeg
         if let Some(path) = self.detect_system_ffmpeg().await {
+            info!("使用系统 FFmpeg: {}", path);
             return Ok(path);
         }
 
         let local_ffmpeg = self.app_dir.join("bin").join("ffmpeg");
         if self.verify_ffmpeg_path(&local_ffmpeg).await {
+            info!("使用本地缓存 FFmpeg: {}", local_ffmpeg.display());
             return Ok(local_ffmpeg.to_string_lossy().to_string());
         }
 
+        info!("未找到可用 FFmpeg，开始下载安装");
         self.download_and_install_ffmpeg().await?;
 
         if !self.verify_ffmpeg_path(&local_ffmpeg).await {
@@ -80,6 +119,7 @@ impl FFmpegDetector {
             );
         }
 
+        info!("FFmpeg 下载安装成功: {}", local_ffmpeg.display());
         Ok(local_ffmpeg.to_string_lossy().to_string())
     }
 
@@ -265,17 +305,49 @@ impl FFmpegDetector {
     }
 
     async fn verify_ffmpeg_path(&self, path: &Path) -> bool {
+        // 检查文件是否存在
         if !path.exists() {
+            debug!("FFmpeg 路径不存在: {}", path.display());
             return false;
         }
 
-        match tokio::process::Command::new(path)
-            .arg("-version")
-            .output()
-            .await
-        {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
+        // 尝试运行 ffmpeg -version，带重试机制
+        for attempt in 1..=3 {
+            match tokio::process::Command::new(path)
+                .arg("-version")
+                .output()
+                .await
+            {
+                Ok(output) => {
+                    if output.status.success() {
+                        debug!("FFmpeg 验证成功: {}", path.display());
+                        return true;
+                    } else {
+                        debug!(
+                            "FFmpeg 验证失败 (尝试 {}/3): {} - 退出码: {:?}",
+                            attempt,
+                            path.display(),
+                            output.status.code()
+                        );
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        "FFmpeg 验证错误 (尝试 {}/3): {} - {}",
+                        attempt,
+                        path.display(),
+                        e
+                    );
+                }
+            }
+
+            // 如果不是最后一次尝试，等待一小段时间后重试
+            if attempt < 3 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
+
+        warn!("FFmpeg 验证失败（已重试 3 次）: {}", path.display());
+        false
     }
 }
