@@ -28,7 +28,40 @@ impl FFmpegDetector {
         None
     }
 
+    pub async fn detect_bundled_ffmpeg(&self) -> Option<String> {
+        // 开发环境：尝试多个可能的路径
+        let dev_paths = vec![
+            std::path::PathBuf::from("src-tauri/resources/bin/ffmpeg"),
+            std::path::PathBuf::from("resources/bin/ffmpeg"),
+            std::path::PathBuf::from("../resources/bin/ffmpeg"),
+        ];
+
+        for path in dev_paths {
+            if self.verify_ffmpeg_path(&path).await {
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+
+        // 生产环境：使用应用资源目录
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(app_dir) = exe_path.parent() {
+                let bundled_path = app_dir.join("resources").join("bin").join("ffmpeg");
+                if self.verify_ffmpeg_path(&bundled_path).await {
+                    return Some(bundled_path.to_string_lossy().to_string());
+                }
+            }
+        }
+
+        None
+    }
+
     pub async fn get_or_install_ffmpeg(&self) -> Result<String> {
+        // 优先使用内置 FFmpeg
+        if let Some(bundled_path) = self.detect_bundled_ffmpeg().await {
+            return Ok(bundled_path);
+        }
+
+        // 次选系统 FFmpeg
         if let Some(path) = self.detect_system_ffmpeg().await {
             return Ok(path);
         }
