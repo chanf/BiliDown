@@ -250,14 +250,14 @@ function App() {
 
     // 如果所有视频都重复（正在下载中），提示用户
     if (newVideos.length === 0) {
-      setError(`所选视频正在下载中，请勿重复添加`);
+      addToast("所选视频正在下载中，请勿重复添加", 'warning');
       return;
     }
 
     // 如果部分视频重复，提示用户但继续下载新视频
     if (duplicateVideos.length > 0) {
       const duplicateTitles = duplicateVideos.map(v => v.part_title || v.title).join('、');
-      setError(`跳过正在下载中的视频：${duplicateTitles}，继续下载 ${newVideos.length} 个新视频`);
+      addToast(`跳过正在下载中的视频：${duplicateTitles}，继续下载 ${newVideos.length} 个新视频`, 'info');
     }
 
     try {
@@ -426,9 +426,9 @@ function App() {
       });
 
       if (failedCount > 0) {
-        setError(`批量暂停完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
+        addToast(`批量暂停完成：成功 ${successCount} 个，失败 ${failedCount} 个`, failedCount > 0 ? 'warning' : 'success');
       } else {
-        setError("");
+        addToast(`批量暂停完成：成功 ${successCount} 个`, 'success');
       }
     } catch (e) {
       setError(`批量暂停失败: ${String(e)}`);
@@ -465,12 +465,12 @@ function App() {
       });
 
       if (failedCount > 0) {
-        setError(`批量恢复完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
+        addToast(`批量恢复完成：成功 ${successCount} 个，失败 ${failedCount} 个`, failedCount > 0 ? 'warning' : 'success');
       } else {
-        setError("");
+        addToast(`批量恢复完成：成功 ${successCount} 个`, 'success');
       }
     } catch (e) {
-      setError(`批量恢复失败: ${String(e)}`);
+      addToast(`批量恢复失败: ${String(e)}`, 'error');
     } finally {
       setResumingAll(false);
     }
@@ -545,7 +545,7 @@ function App() {
           addToast(errorDetails + moreCount, 'warning');
         }
       } else if (successCount > 0) {
-        setError(`已重新添加 ${successCount} 个下载任务`);
+        addToast(`已重新添加 ${successCount} 个下载任务`, 'success');
       } else {
         setError("");
       }
@@ -617,15 +617,15 @@ function App() {
     try {
       await invoke("set_download_config", { config });
       setShowConfig(false);
-      setError("");
+      addToast("设置已保存", 'success');
     } catch (e) {
-      setError(String(e));
+      addToast(`保存设置失败: ${String(e)}`, 'error');
     }
   }
 
   async function copyLogs() {
     if (logs.length === 0) {
-      setError("暂无日志可复制");
+      addToast("暂无日志可复制", 'warning');
       return;
     }
 
@@ -635,17 +635,15 @@ function App() {
       ).join('\n');
 
       await writeText(logText);
-      setError(`已复制 ${logs.length} 条日志`);
-      setTimeout(() => setError(""), 2000);
+      addToast(`已复制 ${logs.length} 条日志`, 'success');
     } catch (e) {
-      setError(`复制日志失败: ${String(e)}`);
+      addToast(`复制日志失败: ${String(e)}`, 'error');
     }
   }
 
   function clearLogs() {
     setLogs([]);
-    setError("已清空日志");
-    setTimeout(() => setError(""), 2000);
+    addToast("已清空日志", 'success');
   }
 
   function addToast(message: string, type: 'error' | 'warning' | 'success' | 'info' = 'info') {
