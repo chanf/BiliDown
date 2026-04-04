@@ -486,6 +486,19 @@ main {
   border-color: rgba(0, 174, 236, 0.45);
 }
 
+/* 重试失败按钮特定样式 */
+.btn-batch-retry {
+  background: #f6ffed;
+  color: #52c41a;
+  border-color: rgba(82, 196, 26, 0.45);
+}
+
+.btn-batch-retry:hover:not(:disabled) {
+  background: #f6ffed;
+  color: #389e0d;
+  border-color: rgba(82, 196, 26, 0.6);
+}
+
 /* 响应式设计 */
 @media (max-width: 600px) {
   .download-controls {

@@ -80,6 +80,7 @@ function App() {
   const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(new Set());
   const [pausingAll, setPausingAll] = useState(false);
   const [resumingAll, setResumingAll] = useState(false);
+  const [retryingAll, setRetryingAll] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
@@ -221,10 +222,11 @@ function App() {
       return;
     }
 
-    // 检查是否有重复的视频（已在下载列表中）
+    // 检查是否有重复的视频（只在下载中任务中检查，已完成的允许重复下载）
     const duplicateVideos: Array<{bvid: string; cid: number; part_title?: string; title: string}> = [];
     const newVideos = videos.filter(video => {
-      const exists = downloadTasks.some(task =>
+      // 只检查正在下载/暂停/待处理的任务，不包括已完成和失败的
+      const exists = activeDownloadTasks.some(task =>
         task.bvid === video.bvid && task.cid === video.cid
       );
       if (exists) {
@@ -233,16 +235,16 @@ function App() {
       return !exists;
     });
 
-    // 如果所有视频都重复，提示用户
+    // 如果所有视频都重复（正在下载中），提示用户
     if (newVideos.length === 0) {
-      setError(`所选视频已在下载列表中，无需重复下载`);
+      setError(`所选视频正在下载中，请勿重复添加`);
       return;
     }
 
     // 如果部分视频重复，提示用户但继续下载新视频
     if (duplicateVideos.length > 0) {
       const duplicateTitles = duplicateVideos.map(v => v.part_title || v.title).join('、');
-      setError(`跳过已在列表中的视频：${duplicateTitles}，继续下载 ${newVideos.length} 个新视频`);
+      setError(`跳过正在下载中的视频：${duplicateTitles}，继续下载 ${newVideos.length} 个新视频`);
     }
 
     try {
@@ -446,6 +448,79 @@ function App() {
     }
   }
 
+  async function retryAllFailedTasks() {
+    if (failedTasksCount === 0 || pausingAll || resumingAll || retryingAll) {
+      return;
+    }
+
+    setRetryingAll(true);
+    try {
+      const failedTasks = activeDownloadTasks.filter(
+        (task) => getStatusText(task.status) === 'Failed'
+      );
+
+      let successCount = 0;
+      let failedCount = 0;
+      const errors: string[] = [];
+
+      // 逐个重试失败任务
+      for (const task of failedTasks) {
+        if (!task.bvid?.trim() || !Number.isFinite(task.cid) || task.cid <= 0 || !task.title?.trim()) {
+          errors.push(`任务 "${task.title || task.part_title || '未知'}" 信息不完整`);
+          failedCount++;
+          continue;
+        }
+
+        try {
+          // 标记为重试中
+          setRetryingTaskIds((prev) => {
+            const next = new Set(prev);
+            next.add(task.task_id);
+            return next;
+          });
+
+          // 重新创建下载任务
+          await invoke("download", {
+            videos: [{
+              bvid: task.bvid,
+              cid: task.cid,
+              title: task.title,
+              part_title: task.part_title,
+            }],
+            savePath: config.save_path || undefined,
+          });
+
+          // 删除旧任务（保留文件，因为新任务会覆盖）
+          await invoke("delete_download", { taskId: task.task_id, cleanFiles: false });
+
+          successCount++;
+        } catch (e) {
+          errors.push(`任务 "${task.title || task.part_title || '未知'}" 重试失败: ${String(e)}`);
+          failedCount++;
+        } finally {
+          // 移除重试中标记
+          setRetryingTaskIds((prev) => {
+            const next = new Set(prev);
+            next.delete(task.task_id);
+            return next;
+          });
+        }
+      }
+
+      if (failedCount > 0) {
+        setError(`批量重试完成：成功 ${successCount} 个，失败 ${failedCount} 个${errors.length > 0 ? '。错误：' + errors.slice(0, 3).join('; ') + (errors.length > 3 ? '...' : '') : ''}`);
+      } else if (successCount > 0) {
+        setError(`已重新添加 ${successCount} 个下载任务`);
+      } else {
+        setError("");
+      }
+    } catch (e) {
+      setError(`批量重试失败: ${String(e)}`);
+    } finally {
+      setRetryingAll(false);
+    }
+  }
+
   useEffect(() => {
     checkLoginStatus();
     const interval = setInterval(checkLoginStatus, 5000);
@@ -528,6 +603,10 @@ function App() {
 
   const pausedTasksCount = activeDownloadTasks.filter(
     (task) => getStatusText(task.status) === 'Paused'
+  ).length;
+
+  const failedTasksCount = activeDownloadTasks.filter(
+    (task) => getStatusText(task.status) === 'Failed'
   ).length;
 
   const parseVideoCount = result?.videos.length ?? 0;
@@ -719,8 +798,19 @@ function App() {
                     >
                       {resumingAll ? "恢复中..." : "全部下载"}
                     </button>
+                    {failedTasksCount > 0 && (
+                      <button
+                        type="button"
+                        className="btn-batch btn-batch-retry"
+                        onClick={retryAllFailedTasks}
+                        disabled={pausingAll || resumingAll || retryingAll}
+                      >
+                        {retryingAll ? `重试中... (${failedTasksCount})` : `重试失败 (${failedTasksCount})`}
+                      </button>
+                    )}
                   </div>
                 )}
+                {error && <p className="error">{error}</p>}
               </div>
             </div>
             {displayDownloadTasks.length === 0 ? (
