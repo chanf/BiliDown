@@ -50,12 +50,12 @@ pub fn run() {
         .unwrap_or_else(|| dirs::home_dir().unwrap())
         .join("bilibili-downloader");
 
-    // 初始化下载状态
+    // 初始化下载状态（从文件加载配置）
     let download_state = DownloadState {
         tasks: Mutex::new(std::collections::HashMap::new()),
         active_tasks: Mutex::new(std::collections::HashMap::new()),
         controls: Mutex::new(std::collections::HashMap::new()),
-        config: Mutex::new(downloader::DownloadConfig::default()),
+        config: Mutex::new(downloader::DownloadConfig::load_from_file()),
     };
 
     // 初始化登录状态
@@ -87,6 +87,7 @@ pub fn run() {
             get_download_progress,
             get_download_config,
             set_download_config,
+            select_download_folder,
             open_download_dir,
             logout,
         ])

@@ -545,28 +545,124 @@ impl BilibiliClient {
         let data = &json["data"];
         let dash = &data["dash"];
 
-        if let Some(video) = dash["video"].as_array().and_then(|v| v.first()) {
-            let video_url = video["baseUrl"].as_str().unwrap().to_string();
+        // 尝试多个视频流，找到可用的
+        if let Some(video_array) = dash["video"].as_array() {
+            if !video_array.is_empty() {
+                let mut video_url: Option<String> = None;
 
-            if let Some(audio) = dash["audio"].as_array().and_then(|a| a.first()) {
-                let audio_url = audio["baseUrl"].as_str().unwrap().to_string();
+                for (index, video) in video_array.iter().enumerate() {
+                    if let Some(url) = video["baseUrl"].as_str() {
+                        let url_str = url.to_string();
+                        eprintln!("尝试视频流 {}/{}: {}", index + 1, video_array.len(),
+                            url_str.split('?').next().unwrap_or(&url_str));
 
-                // 不预先获取文件大小，改为在下载时动态获取
-                // 不同 CDN 节点可能返回不同大小，预先获取不准确
-                let video_size = 0u64;
-                let audio_size = 0u64;
+                        // 验证 URL 可用性
+                        match self.validate_url(&url_str).await {
+                            true => {
+                                eprintln!("✓ 视频流 {} 验证通过", index + 1);
+                                video_url = Some(url_str);
+                                break;
+                            }
+                            false => {
+                                eprintln!("⚠ 视频流 {} 验证失败，尝试下一个", index + 1);
+                            }
+                        }
+                    }
+                }
 
-                return Ok(PlayUrlResult {
-                    video_url,
-                    audio_url,
-                    video_quality: data["quality"].as_i64().unwrap() as i32,
-                    video_size,
-                    audio_size,
+                // 如果所有视频流都验证失败，使用第一个
+                let video_url = video_url.or_else(|| {
+                    video_array.first()
+                        .and_then(|v| v["baseUrl"].as_str())
+                        .map(|s| {
+                            eprintln!("⚠ 所有视频流验证失败，使用第一个视频流");
+                            s.to_string()
+                        })
                 });
+
+                if let Some(video_url) = video_url {
+
+            if let Some(audio_array) = dash["audio"].as_array() {
+                if !audio_array.is_empty() {
+                    // 尝试多个音频流，找到可用的
+                    for (index, audio) in audio_array.iter().enumerate() {
+                        if let Some(audio_url) = audio["baseUrl"].as_str() {
+                            let audio_url_str = audio_url.to_string();
+                            eprintln!("尝试音频流 {}/{}: {}", index + 1, audio_array.len(),
+                                audio_url_str.split('?').next().unwrap_or(&audio_url_str));
+
+                            // 验证 URL 可用性
+                            match self.validate_url(&audio_url_str).await {
+                                true => {
+                                    eprintln!("✓ 音频流 {} 验证通过", index + 1);
+
+                                    // 不预先获取文件大小，改为在下载时动态获取
+                                    // 不同 CDN 节点可能返回不同大小，预先获取不准确
+                                    let video_size = 0u64;
+                                    let audio_size = 0u64;
+
+                                    return Ok(PlayUrlResult {
+                                        video_url,
+                                        audio_url: audio_url_str,
+                                        video_quality: data["quality"].as_i64().unwrap() as i32,
+                                        video_size,
+                                        audio_size,
+                                    });
+                                }
+                                false => {
+                                    eprintln!("⚠ 音频流 {} 验证失败（{}），尝试下一个",
+                                        index + 1,
+                                        audio_url_str.split('/').nth(2).unwrap_or("unknown")
+                                    );
+                                    // 继续尝试下一个音频流
+                                }
+                            }
+                        }
+                    }
+
+                    // 如果所有音频流都验证失败，使用第一个作为最后的尝试
+                    if let Some(first_audio) = audio_array.first() {
+                        if let Some(first_url) = first_audio["baseUrl"].as_str() {
+                            eprintln!("⚠ 所有音频流验证失败，使用第一个音频流作为最后的尝试");
+                            let video_size = 0u64;
+                            let audio_size = 0u64;
+
+                            return Ok(PlayUrlResult {
+                                video_url,
+                                audio_url: first_url.to_string(),
+                                video_quality: data["quality"].as_i64().unwrap() as i32,
+                                video_size,
+                                audio_size,
+                            });
+                        }
+                    }
+
+                    anyhow::bail!("未找到可用的音频流")
+                        }
+                    }
+                }
             }
         }
 
-        anyhow::bail!("未找到视频流");
+        anyhow::bail!("未找到视频流")
+    }
+
+    /// 验证 URL 是否可用（发送 HEAD 请求检查）
+    async fn validate_url(&self, url: &str) -> bool {
+        let response = self.client
+            .head(url)
+            .header("Referer", "https://www.bilibili.com")
+            .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+            .timeout(std::time::Duration::from_secs(10))
+            .send();
+
+        match response.await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                status == 200 || status == 206
+            }
+            Err(_) => false,
+        }
     }
 
 }

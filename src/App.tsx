@@ -78,6 +78,8 @@ function App() {
   const [downloadTab, setDownloadTab] = useState<"active" | "completed">("active");
   const [clearingCompleted, setClearingCompleted] = useState(false);
   const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(new Set());
+  const [pausingAll, setPausingAll] = useState(false);
+  const [resumingAll, setResumingAll] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
@@ -219,10 +221,37 @@ function App() {
       return;
     }
 
+    // 检查是否有重复的视频（已在下载列表中）
+    const duplicateVideos: Array<{bvid: string; cid: number; part_title?: string; title: string}> = [];
+    const newVideos = videos.filter(video => {
+      const exists = downloadTasks.some(task =>
+        task.bvid === video.bvid && task.cid === video.cid
+      );
+      if (exists) {
+        duplicateVideos.push(video);
+      }
+      return !exists;
+    });
+
+    // 如果所有视频都重复，提示用户
+    if (newVideos.length === 0) {
+      setError(`所选视频已在下载列表中，无需重复下载`);
+      return;
+    }
+
+    // 如果部分视频重复，提示用户但继续下载新视频
+    if (duplicateVideos.length > 0) {
+      const duplicateTitles = duplicateVideos.map(v => v.part_title || v.title).join('、');
+      setError(`跳过已在列表中的视频：${duplicateTitles}，继续下载 ${newVideos.length} 个新视频`);
+    }
+
     try {
-      const downloadResult = await invoke<string>("download", { videos });
+      const downloadResult = await invoke<string>("download", { videos: newVideos });
       console.log(downloadResult);
-      setError("");
+      // 如果部分重复，不清除错误提示，让用户看到跳过信息
+      if (duplicateVideos.length === 0) {
+        setError("");
+      }
       setMainTab("download");
     } catch (e) {
       setError(String(e));
@@ -339,6 +368,84 @@ function App() {
     }
   }
 
+  async function pauseAllTasks() {
+    if (downloadingTasksCount === 0 || pausingAll || resumingAll) {
+      return;
+    }
+
+    setPausingAll(true);
+    try {
+      const downloadingTasks = activeDownloadTasks.filter(
+        (task) => getStatusText(task.status) === 'Downloading'
+      );
+
+      const taskIds = downloadingTasks.map((task) => task.task_id);
+      const results = await Promise.allSettled(
+        taskIds.map((taskId) => invoke("pause_download", { taskId }))
+      );
+
+      let successCount = 0;
+      let failedCount = 0;
+
+      results.forEach((result) => {
+        if (result.status === "fulfilled") {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      });
+
+      if (failedCount > 0) {
+        setError(`批量暂停完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
+      } else {
+        setError("");
+      }
+    } catch (e) {
+      setError(`批量暂停失败: ${String(e)}`);
+    } finally {
+      setPausingAll(false);
+    }
+  }
+
+  async function resumeAllTasks() {
+    if (pausedTasksCount === 0 || pausingAll || resumingAll) {
+      return;
+    }
+
+    setResumingAll(true);
+    try {
+      const pausedTasks = activeDownloadTasks.filter(
+        (task) => getStatusText(task.status) === 'Paused'
+      );
+
+      const taskIds = pausedTasks.map((task) => task.task_id);
+      const results = await Promise.allSettled(
+        taskIds.map((taskId) => invoke("resume_download", { taskId }))
+      );
+
+      let successCount = 0;
+      let failedCount = 0;
+
+      results.forEach((result) => {
+        if (result.status === "fulfilled") {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      });
+
+      if (failedCount > 0) {
+        setError(`批量恢复完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
+      } else {
+        setError("");
+      }
+    } catch (e) {
+      setError(`批量恢复失败: ${String(e)}`);
+    } finally {
+      setResumingAll(false);
+    }
+  }
+
   useEffect(() => {
     checkLoginStatus();
     const interval = setInterval(checkLoginStatus, 5000);
@@ -394,6 +501,17 @@ function App() {
     }
   }
 
+  async function selectDownloadDir() {
+    try {
+      const selected = await invoke<string>("select_download_folder");
+      if (selected) {
+        setConfig({ ...config, save_path: selected });
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   const activeDownloadTasks = downloadTasks.filter(
     (task) => getStatusText(task.status) !== "Completed"
   );
@@ -402,6 +520,16 @@ function App() {
   );
   const displayDownloadTasks =
     downloadTab === "active" ? activeDownloadTasks : completedDownloadTasks;
+
+  // 统计正在下载和暂停中的任务数量
+  const downloadingTasksCount = activeDownloadTasks.filter(
+    (task) => getStatusText(task.status) === 'Downloading'
+  ).length;
+
+  const pausedTasksCount = activeDownloadTasks.filter(
+    (task) => getStatusText(task.status) === 'Paused'
+  ).length;
+
   const parseVideoCount = result?.videos.length ?? 0;
 
   return (
@@ -412,12 +540,20 @@ function App() {
             <h1>📺 B 站合集下载器</h1>
             <p className="subtitle">扫码登录 • 批量下载 • 离线观看</p>
           </div>
-          <button
-            className={`login-btn ${loggedIn ? 'logged-in' : ''}`}
-            onClick={handleLoginClick}
-          >
-            {loggedIn ? '退出' : '扫码登录'}
-          </button>
+          <div className="header-right">
+            <button
+              className="config-btn header-config-btn"
+              onClick={() => setShowConfig(true)}
+            >
+              ⚙️ 设置
+            </button>
+            <button
+              className={`login-btn ${loggedIn ? 'logged-in' : ''}`}
+              onClick={handleLoginClick}
+            >
+              {loggedIn ? '退出' : '扫码登录'}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -546,23 +682,45 @@ function App() {
           <section className="download-section">
             <div className="download-header">
               <h2>📥 下载列表</h2>
-              <div className="download-tabs">
-                <button
-                  type="button"
-                  className={`download-tab-btn ${downloadTab === "active" ? "active" : ""}`}
-                  onClick={() => setDownloadTab("active")}
-                >
-                  下载中
-                  <span className="download-tab-count">{activeDownloadTasks.length}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`download-tab-btn ${downloadTab === "completed" ? "active" : ""}`}
-                  onClick={() => setDownloadTab("completed")}
-                >
-                  已下载
-                  <span className="download-tab-count">{completedDownloadTasks.length}</span>
-                </button>
+              <div className="download-controls">
+                <div className="download-tabs">
+                  <button
+                    type="button"
+                    className={`download-tab-btn ${downloadTab === "active" ? "active" : ""}`}
+                    onClick={() => setDownloadTab("active")}
+                  >
+                    下载中
+                    <span className="download-tab-count">{activeDownloadTasks.length}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`download-tab-btn ${downloadTab === "completed" ? "active" : ""}`}
+                    onClick={() => setDownloadTab("completed")}
+                  >
+                    已下载
+                    <span className="download-tab-count">{completedDownloadTasks.length}</span>
+                  </button>
+                </div>
+                {downloadTab === "active" && (
+                  <div className="batch-actions">
+                    <button
+                      type="button"
+                      className="btn-batch btn-batch-pause"
+                      onClick={pauseAllTasks}
+                      disabled={pausingAll || resumingAll || downloadingTasksCount === 0}
+                    >
+                      {pausingAll ? "暂停中..." : "全部暂停"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-batch btn-batch-resume"
+                      onClick={resumeAllTasks}
+                      disabled={pausingAll || resumingAll || pausedTasksCount === 0}
+                    >
+                      {resumingAll ? "恢复中..." : "全部下载"}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
             {displayDownloadTasks.length === 0 ? (
@@ -669,16 +827,28 @@ function App() {
               </div>
               <div className="modal-body">
                 <div className="config-item">
-                  <label>保存路径</label>
-                  <input
-                    type="text"
-                    value={config.save_path}
-                    onChange={(e) => setConfig({ ...config, save_path: e.target.value })}
-                    placeholder="~/Movies"
-                  />
+                  <label>下载目录</label>
+                  <div className="path-input-group">
+                    <input
+                      type="text"
+                      value={config.save_path}
+                      onChange={(e) => setConfig({ ...config, save_path: e.target.value })}
+                      placeholder="选择下载目录"
+                    />
+                    <button
+                      type="button"
+                      className="btn-browse"
+                      onClick={selectDownloadDir}
+                    >
+                      浏览
+                    </button>
+                  </div>
                 </div>
                 <div className="config-item">
-                  <label>并发连接数</label>
+                  <label>
+                    同时下载数量
+                    <span className="config-hint">单个任务的并发连接数</span>
+                  </label>
                   <input
                     type="number"
                     min="1"
@@ -725,7 +895,6 @@ function App() {
         <div className="footer-content">
           <div className="footer-buttons">
             <button className="config-btn" onClick={openDownloadDir}>📁 打开目录</button>
-            <button className="config-btn" onClick={() => setShowConfig(true)}>⚙️ 设置</button>
           </div>
         </div>
       </footer>

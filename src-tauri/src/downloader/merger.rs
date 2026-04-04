@@ -141,11 +141,32 @@ impl VideoMerger {
         audio_path: &Path,
         output_path: &Path,
     ) -> Result<()> {
-        eprintln!("FFmpeg 命令: {} -i {} -i {} -c:v copy -c:a copy -y {}",
-                 self.ffmpeg_path,
-                 video_path.display(),
-                 audio_path.display(),
-                 output_path.display());
+        // 检测是否需要 macOS 兼容性处理
+        let is_macos = std::env::consts::OS == "macos";
+        let needs_hevc_fix = is_macos && self.is_hevc_video(video_path).await;
+
+        // 提前转换字符串以避免临时值问题
+        let video_path_str = video_path.to_string_lossy().to_string();
+        let audio_path_str = audio_path.to_string_lossy().to_string();
+        let output_path_str = output_path.to_string_lossy().to_string();
+
+        let mut args = vec![
+            "-i", &video_path_str,
+            "-i", &audio_path_str,
+            "-c:v", "copy",
+        ];
+
+        // macOS HEVC 兼容性修复：使用 hvc1 标签替代 hev1
+        if needs_hevc_fix {
+            eprintln!("检测到 HEVC 视频，添加 macOS 兼容性修复 (hvc1 标签)");
+            args.extend(["-tag:v", "hvc1"]);
+        }
+
+        args.extend(["-c:a", "copy", "-y", &output_path_str]);
+
+        // 打印命令（在消耗 args 之前）
+        let cmd_str = format!("{} {}", self.ffmpeg_path, args.join(" "));
+        eprintln!("FFmpeg 命令: {}", cmd_str);
 
         // 验证输入文件存在
         if !video_path.exists() {
@@ -156,14 +177,7 @@ impl VideoMerger {
         }
 
         let output = tokio::process::Command::new(&self.ffmpeg_path)
-            .args([
-                "-i", &video_path.to_string_lossy(),
-                "-i", &audio_path.to_string_lossy(),
-                "-c:v", "copy",
-                "-c:a", "copy",
-                "-y",
-                &output_path.to_string_lossy(),
-            ])
+            .args(&args)
             .output()
             .await?;
 
@@ -182,6 +196,26 @@ impl VideoMerger {
         }
 
         Ok(())
+    }
+
+    /// 检测视频是否为 HEVC 编码
+    async fn is_hevc_video(&self, video_path: &Path) -> bool {
+        // 使用 ffmpeg 检测视频编码
+        let probe_output = tokio::process::Command::new(&self.ffmpeg_path)
+            .args(["-i", &video_path.to_string_lossy(), "-hide_banner"])
+            .output()
+            .await;
+
+        match probe_output {
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // 检查是否包含 hevc、h265 等关键字
+                stderr.to_lowercase().contains("hevc") ||
+                stderr.to_lowercase().contains("h265") ||
+                stderr.to_lowercase().contains("hev1")
+            }
+            Err(_) => false,
+        }
     }
 
 }

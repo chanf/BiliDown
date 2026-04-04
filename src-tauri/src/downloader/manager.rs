@@ -182,6 +182,10 @@ async fn run_download_pipeline(
         task.status = TaskStatus::Downloading;
     });
 
+    // 验证 URL 可访问性
+    eprintln!("验证视频 URL: {}", request.video_url.chars().take(80).collect::<String>());
+    eprintln!("验证音频 URL: {}", request.audio_url.chars().take(80).collect::<String>());
+
     let temp_dir = task_temp_dir(task_id);
     tokio::fs::create_dir_all(&temp_dir).await?;
 
@@ -206,7 +210,7 @@ async fn run_download_pipeline(
                 });
             })
             .await
-            .context("视频下载失败")
+            .with_context(|| format!("视频下载失败\nURL: {}", request.video_url))
     };
 
     let audio_future = async {
@@ -226,7 +230,7 @@ async fn run_download_pipeline(
                 });
             })
             .await
-            .context("音频下载失败")
+            .with_context(|| format!("音频下载失败\nURL: {}", request.audio_url))
     };
 
     let (video_result, audio_result) = tokio::try_join!(video_future, audio_future)?;

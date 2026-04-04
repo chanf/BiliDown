@@ -60,6 +60,45 @@ pub struct DownloadConfig {
     pub timeout: u64,
 }
 
+pub const CONFIG_FILE: &str = "config.json";
+
+impl DownloadConfig {
+    /// 获取配置文件路径
+    pub fn get_config_file() -> std::path::PathBuf {
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap())
+            .join("bilibili-downloader");
+
+        // 确保配置目录存在
+        std::fs::create_dir_all(&config_dir).ok();
+
+        config_dir.join(CONFIG_FILE)
+    }
+
+    /// 从文件加载配置
+    pub fn load_from_file() -> Self {
+        let config_file = Self::get_config_file();
+
+        if config_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(&config_file) {
+                if let Ok(config) = serde_json::from_str::<DownloadConfig>(&content) {
+                    return config;
+                }
+            }
+        }
+
+        Self::default()
+    }
+
+    /// 保存配置到文件
+    pub fn save_to_file(&self) -> anyhow::Result<()> {
+        let config_file = Self::get_config_file();
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&config_file, content)?;
+        Ok(())
+    }
+}
+
 impl Default for DownloadConfig {
     fn default() -> Self {
         Self {
@@ -72,8 +111,8 @@ impl Default for DownloadConfig {
             concurrent_connections: 4,
             chunk_size: 1024 * 1024,
             quality: 80,
-            max_retry: 3,
-            timeout: 30,
+            max_retry: 5,
+            timeout: 60,
         }
     }
 }

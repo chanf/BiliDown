@@ -50,6 +50,18 @@ header {
   margin-bottom: 0.1rem;
 }
 
+.header-left p {
+  margin: 0.25rem 0 0 0;
+  font-size: 0.75rem;
+  opacity: 0.9;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .login-btn {
   padding: 0.5rem 1rem;
   font-size: 0.9rem;
@@ -419,6 +431,79 @@ main {
   color: var(--primary);
 }
 
+/* 下载控制区域容器 */
+.download-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+/* 批量操作按钮组 */
+.batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 批量操作按钮基础样式 */
+.btn-batch {
+  padding: 0.38rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-batch:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+
+.btn-batch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 暂停按钮特定样式 */
+.btn-batch-pause:hover:not(:disabled) {
+  background: #fff7e6;
+  color: var(--warning);
+  border-color: rgba(250, 173, 20, 0.45);
+}
+
+/* 恢复按钮特定样式 */
+.btn-batch-resume:hover:not(:disabled) {
+  background: #e6f7ff;
+  color: var(--primary);
+  border-color: rgba(0, 174, 236, 0.45);
+}
+
+/* 响应式设计 */
+@media (max-width: 600px) {
+  .download-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .batch-actions {
+    justify-content: stretch;
+  }
+
+  .btn-batch {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+  }
+}
+
 .empty {
   color: var(--text-secondary);
   text-align: center;
@@ -535,22 +620,70 @@ footer {
   gap: 0.5rem;
 }
 
-.config-btn {
-  background: none;
+.footer-buttons .config-btn {
+  background: var(--bg);
   border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.footer-buttons .config-btn:hover {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: white;
+}
+
+.header-config-btn {
   padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  background: white;
+  color: var(--primary);
+  border: none;
   border-radius: 6px;
   cursor: pointer;
-  color: var(--text-secondary);
-  font-size: 0.85rem;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.header-config-btn:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+/* 路径输入组 */
+.path-input-group {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.path-input-group input {
+  flex: 1;
+}
+
+.btn-browse {
+  padding: 0.5rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.875rem;
+  cursor: pointer;
+  white-space: nowrap;
   transition: all 0.2s;
 }
 
-.config-btn:hover {
-  background: var(--bg);
+.btn-browse:hover {
+  background: var(--primary);
+  color: white;
   border-color: var(--primary);
-  color: var(--primary);
 }
+
+/* 配置提示 */
+.config-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+}
+
 
 /* 下载列表 */
 .download-list {

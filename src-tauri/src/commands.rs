@@ -309,8 +309,22 @@ pub async fn set_download_config(
     config: DownloadConfig,
     state: State<'_, DownloadState>,
 ) -> Result<(), String> {
-    *state.config.lock().unwrap() = config;
+    // 保存到内存
+    *state.config.lock().unwrap() = config.clone();
+
+    // 持久化到文件
+    config.save_to_file().map_err(|e| e.to_string())?;
+
     Ok(())
+}
+
+#[tauri::command]
+pub async fn select_download_folder() -> Result<Option<String>, String> {
+    let file_handle = rfd::AsyncFileDialog::new()
+        .pick_folder()
+        .await;
+
+    Ok(file_handle.map(|h| h.path().to_string_lossy().to_string()))
 }
 
 #[tauri::command]

@@ -258,21 +258,27 @@ async fn download_chunk_job(
         .await
         .with_context(|| {
             format!(
-                "下载分块失败: index={}, bytes={}-{}",
-                job.plan.index, range_start, range_end
+                "下载分块失败: index={}, bytes={}-{}, expected={} bytes\nURL: {}",
+                job.plan.index, range_start, range_end, expected,
+                url.chars().take(100).collect::<String>()
             )
         })?;
 
     if bytes.is_empty() {
-        anyhow::bail!("服务器返回空分块: index={}", job.plan.index);
+        anyhow::bail!(
+            "服务器返回空分块: index={}, range={}-{}\nURL: {}",
+            job.plan.index, range_start, range_end,
+            url.chars().take(100).collect::<String>()
+        );
     }
 
     if bytes.len() as u64 != expected {
         anyhow::bail!(
-            "分块长度不匹配: index={}, got={}, expected={}",
+            "分块长度不匹配: index={}, got={}, expected={}\nURL: {}",
             job.plan.index,
             bytes.len(),
-            expected
+            expected,
+            url.chars().take(100).collect::<String>()
         );
     }
 
@@ -284,17 +290,19 @@ async fn download_chunk_job(
         .create(true)
         .append(true)
         .open(&job.plan.path)
-        .await?;
+        .await
+        .with_context(|| format!("无法创建分块文件: {:?}", job.plan.path))?;
     file.write_all(&bytes).await?;
     file.flush().await?;
 
     let final_size = local_file_size(&job.plan.path).await?;
     if final_size != job.plan.len {
         anyhow::bail!(
-            "分块写入校验失败: index={}, got={}, expected={}",
+            "分块写入校验失败: index={}, got={}, expected={}, path={:?}",
             job.plan.index,
             final_size,
-            job.plan.len
+            job.plan.len,
+            job.plan.path
         );
     }
 
@@ -316,18 +324,32 @@ async fn fetch_chunk_with_retry(
         ensure_not_cancelled(control)?;
 
         match fetch_chunk(client, config, url, start, end).await {
-            Ok(bytes) => return Ok(bytes),
+            Ok(bytes) => {
+                if attempt > 0 {
+                    eprintln!("✓ 分块下载重试成功: range={}-{}, 尝试次数={}", start, end, attempt + 1);
+                }
+                return Ok(bytes);
+            }
             Err(err) => {
                 last_error = Some(err);
                 if attempt < config.max_retry {
                     let delay = 2u64.pow(attempt as u32);
+                    eprintln!(
+                        "⚠ 分块下载失败，将在 {} 秒后重试 ({}/{}): range={}-{}, 错误: {}",
+                        delay,
+                        attempt + 1,
+                        config.max_retry + 1,
+                        start,
+                        end,
+                        last_error.as_ref().map(|e| e.to_string().chars().take(100).collect::<String>()).unwrap_or_default()
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                 }
             }
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("下载失败")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("下载失败，已重试 {} 次", config.max_retry + 1)))
 }
 
 async fn fetch_chunk(
@@ -357,18 +379,33 @@ async fn fetch_chunk(
         .await?;
 
     if response.status().as_u16() == 416 {
-        anyhow::bail!("Range 416: bytes={}-{}", start, end);
-    }
-
-    if response.status().as_u16() != 206 {
         anyhow::bail!(
-            "下载状态码异常: status={}, range={}",
-            response.status(),
-            range
+            "Range请求不可满足: bytes={}-{}, 请尝试删除缓存重新下载\nURL: {}",
+            start, end,
+            url.chars().take(100).collect::<String>()
         );
     }
 
-    let bytes = response.bytes().await?;
+    if response.status().as_u16() != 206 {
+        let status = response.status();
+        let response_text = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "下载状态码异常: status={}, range={}\n响应: {}\nURL: {}",
+            status,
+            range,
+            response_text.chars().take(200).collect::<String>(),
+            url.chars().take(100).collect::<String>()
+        );
+    }
+
+    let bytes = response.bytes().await.with_context(|| {
+        format!(
+            "读取响应数据失败: range={}-{}\nURL: {}",
+            start, end,
+            url.chars().take(100).collect::<String>()
+        )
+    })?;
+
     Ok(bytes.to_vec())
 }
 
