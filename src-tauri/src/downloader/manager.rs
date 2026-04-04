@@ -245,6 +245,13 @@ async fn run_download_pipeline(
         task.status = TaskStatus::Merging;
     });
 
+    // 从任务状态中获取正确的保存路径（已包含合集子目录）
+    let save_path = {
+        let tasks = state.tasks.lock().unwrap();
+        tasks.get(task_id).map(|t| t.save_path.clone())
+            .unwrap_or_else(|| request.config.save_path.clone())
+    };
+
     let ffmpeg_path = FFmpegDetector::new(
         dirs::data_dir()
             .unwrap_or_else(std::env::temp_dir)
@@ -254,7 +261,7 @@ async fn run_download_pipeline(
     .await
     .context("未找到可用 FFmpeg，请检查网络或先手动安装 ffmpeg")?;
 
-    let output_dir = PathBuf::from(&request.config.save_path);
+    let output_dir = PathBuf::from(&save_path);
     tokio::fs::create_dir_all(&output_dir).await?;
 
     let final_filename = build_filename(&request.title, request.part_title.as_deref());
