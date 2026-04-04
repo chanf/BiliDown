@@ -2,6 +2,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use std::collections::HashSet;
+use crate::logger;
 
 /// B 站 URL 类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,6 +488,8 @@ impl BilibiliClient {
     /// 获取视频播放URL（自动从最高质量开始尝试并降级）
     /// 每个视频都会独立尝试从 4K 开始，依次降级到可用质量
     pub async fn get_play_url(&self, bvid: &str, cid: i64, _quality: i32) -> Result<PlayUrlResult> {
+        logger::log_info(&format!("开始获取视频播放URL: {} CID {}", bvid, cid));
+
         // 总是从 4K (120) 开始尝试，依次降级
         // 忽略传入的 quality 参数，确保每个视频都尝试最高可用质量
         for (index, &target_quality) in Self::QUALITY_FALLBACK.iter().enumerate() {
@@ -494,21 +497,29 @@ impl BilibiliClient {
                 Ok(result) => {
                     // 如果不是使用最高质量，输出提示信息
                     if index > 0 {
-                        eprintln!("✓ 视频 {} CID {} 使用质量: {} (4K不可用，已降级)", bvid, cid, target_quality);
+                        let msg = format!("✓ 视频 {} CID {} 使用质量: {} (4K不可用，已降级)", bvid, cid, target_quality);
+                        eprintln!("{}", msg);
+                        logger::log_info(&msg);
                     } else {
-                        eprintln!("✓ 视频 {} CID {} 使用质量: {} (4K)", bvid, cid, target_quality);
+                        let msg = format!("✓ 视频 {} CID {} 使用质量: {} (4K)", bvid, cid, target_quality);
+                        eprintln!("{}", msg);
+                        logger::log_info(&msg);
                     }
                     return Ok(result);
                 }
                 Err(e) => {
-                    eprintln!("⚠ 视频 {} CID {} 质量 {} 不可用: {}", bvid, cid, target_quality,
+                    let msg = format!("⚠ 视频 {} CID {} 质量 {} 不可用: {}", bvid, cid, target_quality,
                         e.to_string().lines().next().unwrap_or(&e.to_string()));
+                    eprintln!("{}", msg);
+                    logger::log_warn(&msg);
                     continue;
                 }
             }
         }
 
-        anyhow::bail!("视频 {} CID {} 所有质量等级都无法下载", bvid, cid);
+        let err_msg = format!("视频 {} CID {} 所有质量等级都无法下载", bvid, cid);
+        logger::log_error(&err_msg);
+        anyhow::bail!(err_msg);
     }
 
     /// 尝试获取指定质量的播放URL

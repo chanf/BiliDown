@@ -3,6 +3,7 @@ mod login;
 mod commands;
 mod downloader;
 mod ffmpeg;
+mod logger;
 
 use commands::*;
 use downloader::DownloadState;
@@ -73,6 +74,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .setup(|app| {
+            // 初始化日志系统
+            logger::init(app.handle().clone());
+            Ok(())
+        })
         .manage(login_state)
         .manage(download_state)
         .invoke_handler(tauri::generate_handler![

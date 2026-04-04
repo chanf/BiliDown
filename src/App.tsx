@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import "./App.css";
 
 interface PlaylistVideo {
@@ -38,6 +39,12 @@ interface DownloadConfig {
   quality: number;
   max_retry: number;
   timeout: number;
+}
+
+interface LogEntry {
+  level: string;
+  message: string;
+  timestamp: string;
 }
 
 // Helper function to extract status string from Rust enum serialization
@@ -82,6 +89,9 @@ function App() {
   const [resumingAll, setResumingAll] = useState(false);
   const [retryingAll, setRetryingAll] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [showLogPanel, setShowLogPanel] = useState(false);
+  const logContainerRef = useRef<HTMLDivElement>(null);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
     concurrent_connections: 4,
@@ -549,6 +559,24 @@ function App() {
     };
   }, []);
 
+  // 监听日志事件
+  useEffect(() => {
+    const unlisten = listen<LogEntry>('log-entry', (event) => {
+      setLogs(prev => [...prev, event.payload]);
+    });
+
+    return () => {
+      unlisten.then(fn => fn());
+    };
+  }, []);
+
+  // 自动滚动到最新日志
+  useEffect(() => {
+    if (logContainerRef.current && showLogPanel) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs, showLogPanel]);
+
   async function loadConfig() {
     try {
       const loadedConfig = await invoke<DownloadConfig>("get_download_config");
@@ -566,6 +594,31 @@ function App() {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  async function copyLogs() {
+    if (logs.length === 0) {
+      setError("暂无日志可复制");
+      return;
+    }
+
+    try {
+      const logText = logs.map(log =>
+        `[${log.timestamp}] [${log.level.toUpperCase()}] ${log.message}`
+      ).join('\n');
+
+      await writeText(logText);
+      setError(`已复制 ${logs.length} 条日志`);
+      setTimeout(() => setError(""), 2000);
+    } catch (e) {
+      setError(`复制日志失败: ${String(e)}`);
+    }
+  }
+
+  function clearLogs() {
+    setLogs([]);
+    setError("已清空日志");
+    setTimeout(() => setError(""), 2000);
   }
 
   async function openDownloadDir() {
@@ -980,6 +1033,49 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* 日志窗口切换按钮 */}
+      <button
+        className="log-toggle-btn"
+        onClick={() => setShowLogPanel(!showLogPanel)}
+        title={showLogPanel ? "隐藏日志" : "显示日志"}
+      >
+        {showLogPanel ? '📖 隐藏日志' : '📋 显示日志'}
+        {logs.length > 0 && ` (${logs.length})`}
+      </button>
+
+      {/* 日志窗口 */}
+      {showLogPanel && (
+        <div className="log-panel">
+          <div className="log-panel-header">
+            <h3>运行日志</h3>
+            <div className="log-panel-actions">
+              <button onClick={copyLogs} title="复制所有日志到剪切板">复制</button>
+              <button onClick={clearLogs} title="清空所有日志">清空</button>
+              <button onClick={() => setShowLogPanel(false)} title="关闭日志窗口">关闭</button>
+            </div>
+          </div>
+          <div ref={logContainerRef} className="log-panel-content">
+            {logs.length === 0 ? (
+              <p className="log-empty">暂无日志</p>
+            ) : (
+              logs.map((log, index) => {
+                // 从 level 字符串中提取实际级别
+                const levelMatch = log.level.match(/"(\w+)"/);
+                const level = levelMatch ? levelMatch[1] : 'info';
+
+                return (
+                  <div key={index} className={`log-entry log-${level}`}>
+                    <span className="log-timestamp">[{log.timestamp}]</span>
+                    <span className="log-level">[{level.toUpperCase()}]</span>
+                    <span className="log-message">{log.message}</span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
 
       <footer>
         <div className="footer-content">
