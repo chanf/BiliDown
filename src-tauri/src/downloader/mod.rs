@@ -110,7 +110,7 @@ impl Default for DownloadConfig {
                 .to_string(),
             concurrent_connections: 4,
             chunk_size: 1024 * 1024,
-            quality: 80,
+            quality: 120, // 默认 4K，会自动降级到最高可用质量
             max_retry: 5,
             timeout: 60,
         }

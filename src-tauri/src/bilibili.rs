@@ -484,35 +484,31 @@ impl BilibiliClient {
     /// 质量降级列表（从高到低）
     const QUALITY_FALLBACK: &[i32] = &[120, 116, 112, 80, 64, 32];
 
-    /// 获取视频播放URL（支持质量自动降级）
-    pub async fn get_play_url(&self, bvid: &str, cid: i64, quality: i32) -> Result<PlayUrlResult> {
-        // 先尝试请求的质量
-        match self.try_get_play_url(bvid, cid, quality).await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                // 如果是 403 错误或没有视频流，尝试降级
-                if e.to_string().contains("403") || e.to_string().contains("未找到视频流") {
-                    let fallback_qualities: Vec<i32> = Self::QUALITY_FALLBACK
-                        .iter()
-                        .filter(|&&q| q < quality)
-                        .copied()
-                        .collect();
-
-                    for fallback_quality in fallback_qualities {
-                        match self.try_get_play_url(bvid, cid, fallback_quality).await {
-                            Ok(result) => {
-                                eprintln!("质量 {} 不可用，已自动降级到 {}", quality, fallback_quality);
-                                return Ok(result);
-                            }
-                            Err(_) => continue,
-                        }
+    /// 获取视频播放URL（自动从最高质量开始尝试并降级）
+    /// 每个视频都会独立尝试从 4K 开始，依次降级到可用质量
+    pub async fn get_play_url(&self, bvid: &str, cid: i64, _quality: i32) -> Result<PlayUrlResult> {
+        // 总是从 4K (120) 开始尝试，依次降级
+        // 忽略传入的 quality 参数，确保每个视频都尝试最高可用质量
+        for (index, &target_quality) in Self::QUALITY_FALLBACK.iter().enumerate() {
+            match self.try_get_play_url(bvid, cid, target_quality).await {
+                Ok(result) => {
+                    // 如果不是使用最高质量，输出提示信息
+                    if index > 0 {
+                        eprintln!("✓ 视频 {} CID {} 使用质量: {} (4K不可用，已降级)", bvid, cid, target_quality);
+                    } else {
+                        eprintln!("✓ 视频 {} CID {} 使用质量: {} (4K)", bvid, cid, target_quality);
                     }
-
-                    anyhow::bail!("所有质量等级都无法下载: {}", e);
+                    return Ok(result);
                 }
-                return Err(e);
+                Err(e) => {
+                    eprintln!("⚠ 视频 {} CID {} 质量 {} 不可用: {}", bvid, cid, target_quality,
+                        e.to_string().lines().next().unwrap_or(&e.to_string()));
+                    continue;
+                }
             }
         }
+
+        anyhow::bail!("视频 {} CID {} 所有质量等级都无法下载", bvid, cid);
     }
 
     /// 尝试获取指定质量的播放URL
