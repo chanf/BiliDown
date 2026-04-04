@@ -92,6 +92,7 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showLogPanel, setShowLogPanel] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const [toasts, setToasts] = useState<Array<{id: string; message: string; type: 'error' | 'warning' | 'success' | 'info'}>>([]);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
     concurrent_connections: 4,
@@ -268,7 +269,14 @@ function App() {
       }
       setMainTab("download");
     } catch (e) {
-      setError(String(e));
+      const errorMsg = String(e);
+      // 长错误消息使用 toast 显示
+      if (errorMsg.length > 50 || errorMsg.includes("所有质量等级都无法下载")) {
+        addToast(errorMsg, 'error');
+        setError("下载失败，请查看提示");
+      } else {
+        setError(errorMsg);
+      }
     }
   }
 
@@ -328,10 +336,18 @@ function App() {
         await invoke("delete_download", { taskId: task.task_id, cleanFiles: true });
         setDownloadTasks((prev) => prev.filter((t) => t.task_id !== task.task_id));
       } catch (deleteError) {
-        setError(`重试已创建新任务，但旧任务清理失败: ${String(deleteError)}`);
+        const errorMsg = `重试已创建新任务，但旧任务清理失败: ${String(deleteError)}`;
+        addToast(errorMsg, 'warning');
       }
     } catch (e) {
-      setError(`重试失败: ${String(e)}`);
+      const errorMsg = String(e);
+      // 长错误消息使用 toast 显示
+      if (errorMsg.length > 50 || errorMsg.includes("所有质量等级都无法下载")) {
+        addToast(`重试失败: ${errorMsg}`, 'error');
+        setError("重试失败，请查看提示");
+      } else {
+        setError(`重试失败: ${errorMsg}`);
+      }
     } finally {
       setRetryingTaskIds((prev) => {
         const next = new Set(prev);
@@ -520,14 +536,23 @@ function App() {
       }
 
       if (failedCount > 0) {
-        setError(`批量重试完成：成功 ${successCount} 个，失败 ${failedCount} 个${errors.length > 0 ? '。错误：' + errors.slice(0, 3).join('; ') + (errors.length > 3 ? '...' : '') : ''}`);
+        const summary = `批量重试完成：成功 ${successCount} 个，失败 ${failedCount} 个`;
+        setError(summary);
+        // 详细错误使用 toast 显示
+        if (errors.length > 0) {
+          const errorDetails = errors.slice(0, 5).join('\n');
+          const moreCount = errors.length > 5 ? `\n...还有 ${errors.length - 5} 个错误` : '';
+          addToast(errorDetails + moreCount, 'warning');
+        }
       } else if (successCount > 0) {
         setError(`已重新添加 ${successCount} 个下载任务`);
       } else {
         setError("");
       }
     } catch (e) {
-      setError(`批量重试失败: ${String(e)}`);
+      const errorMsg = `批量重试失败: ${String(e)}`;
+      setError("批量重试失败，请查看提示");
+      addToast(errorMsg, 'error');
     } finally {
       setRetryingAll(false);
     }
@@ -621,6 +646,17 @@ function App() {
     setLogs([]);
     setError("已清空日志");
     setTimeout(() => setError(""), 2000);
+  }
+
+  function addToast(message: string, type: 'error' | 'warning' | 'success' | 'info' = 'info') {
+    const id = Date.now().toString() + Math.random().toString();
+    setToasts(prev => [...prev, { id, message, type }]);
+
+    // 自动移除 toast（错误消息 8 秒，其他 3 秒）
+    const duration = type === 'error' ? 8000 : 3000;
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, duration);
   }
 
   async function openDownloadDir() {
@@ -1078,6 +1114,27 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Toast 提示组件 */}
+      <div className="toast-container">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`toast toast-${toast.type}`}>
+            <div className="toast-content">
+              {toast.type === 'error' && '⚠️ '}
+              {toast.type === 'warning' && '⚡ '}
+              {toast.type === 'success' && '✅ '}
+              {toast.type === 'info' && 'ℹ️ '}
+              {toast.message}
+            </div>
+            <button
+              className="toast-close"
+              onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
 
       <footer>
         <div className="footer-content">
