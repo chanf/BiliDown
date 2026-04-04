@@ -225,6 +225,8 @@ function App() {
         cid: video.cid,
         title: result.title,
         part_title: video.title,
+        collection_type: result.type,
+        collection_title: result.title,
       }));
 
     if (videos.length === 0) {

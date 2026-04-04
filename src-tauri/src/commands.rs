@@ -192,6 +192,8 @@ pub struct VideoToDownload {
     pub cid: i64,
     pub title: String,
     pub part_title: Option<String>,
+    pub collection_type: Option<String>,  // 合集类型: "single", "multi_part", "collection"
+    pub collection_title: Option<String>, // 合集标题
 }
 
 #[tauri::command]
@@ -235,6 +237,8 @@ pub async fn download(
             video_url: play_url.video_url,
             audio_url: play_url.audio_url,
             config: config.clone(),
+            collection_type: video.collection_type.clone(),
+            collection_title: video.collection_title.clone(),
         };
 
         let task_id = manager

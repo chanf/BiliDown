@@ -18,6 +18,8 @@ pub struct StartDownloadRequest {
     pub video_url: String,
     pub audio_url: String,
     pub config: DownloadConfig,
+    pub collection_type: Option<String>,  // 合集类型: "single", "multi_part", "collection"
+    pub collection_title: Option<String>, // 合集标题
 }
 
 /// 下载任务管理器
@@ -34,6 +36,10 @@ impl<'a> DownloadManager<'a> {
     pub async fn create_and_start(&self, request: StartDownloadRequest) -> Result<String> {
         let task_id = format!("{}_{}_{}", request.bvid, request.cid, uuid::Uuid::new_v4());
         let filename = build_filename(&request.title, request.part_title.as_deref());
+
+        // 根据合集类型计算保存路径
+        let save_path = compute_save_path(&request.config.save_path, &request.collection_type, &request.collection_title);
+
         let now = current_timestamp();
 
         let task = DownloadTask {
@@ -50,7 +56,7 @@ impl<'a> DownloadManager<'a> {
             video_downloaded: 0,
             audio_downloaded: 0,
             speed: 0,
-            save_path: request.config.save_path.clone(),
+            save_path,
             filename,
             created_at: now,
             updated_at: now,
@@ -332,6 +338,54 @@ fn sanitize_filename(raw: &str) -> String {
         "未命名视频".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+/// 计算保存路径：如果是合集，创建合集子目录
+fn compute_save_path(base_path: &str, collection_type: &Option<String>, collection_title: &Option<String>) -> String {
+    // 只有多分P和合集才创建子目录
+    let is_collection = matches!(
+        collection_type.as_deref(),
+        Some("multi_part") | Some("collection")
+    );
+
+    if is_collection {
+        if let Some(title) = collection_title {
+            if !title.trim().is_empty() {
+                let sanitized_dir = sanitize_filename_for_dir(title);
+                let path = std::path::PathBuf::from(base_path).join(&sanitized_dir);
+
+                // 确保目录存在
+                if let Err(e) = std::fs::create_dir_all(&path) {
+                    eprintln!("创建合集目录失败: {}, 使用基础路径: {}", e, path.display());
+                    return base_path.to_string();
+                }
+
+                return path.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    base_path.to_string()
+}
+
+/// 清理目录名称（移除不适合作为目录名的字符）
+fn sanitize_filename_for_dir(raw: &str) -> String {
+    let sanitized: String = raw
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ if c.is_control() => '_',
+            _ => c,
+        })
+        .collect();
+
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        "未命名合集".to_string()
+    } else {
+        // 移除首尾的点和空格
+        trimmed.trim_matches('.').trim().to_string()
     }
 }
 
