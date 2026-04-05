@@ -373,23 +373,20 @@ pub fn open_download_dir(state: State<'_, DownloadState>) -> Result<(), String> 
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HistorySearchRequest {
-    pub keyword: Option<String>,
-    pub status: Option<String>,
-    pub start_date: Option<i64>,
-    pub end_date: Option<i64>,
-    pub limit: Option<usize>,
-}
-
 #[tauri::command]
-pub async fn search_history(request: HistorySearchRequest) -> Result<Vec<HistoryEntry>, String> {
+pub async fn search_history(
+    keyword: Option<String>,
+    status: Option<String>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    limit: Option<usize>,
+) -> Result<Vec<HistoryEntry>, String> {
     history::search_history(
-        request.keyword,
-        request.status,
-        request.start_date,
-        request.end_date,
-        request.limit.unwrap_or(100),
+        keyword,
+        status,
+        start_date,
+        end_date,
+        limit.unwrap_or(100),
     )
     .map_err(|e| e.to_string())
 }
