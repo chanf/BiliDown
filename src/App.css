@@ -697,6 +697,13 @@ footer {
   margin-top: 0.25rem;
 }
 
+.config-help {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.5rem;
+  line-height: 1.4;
+}
+
 
 /* 下载列表 */
 .download-list {

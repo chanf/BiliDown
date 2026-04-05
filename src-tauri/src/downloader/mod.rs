@@ -113,11 +113,11 @@ impl Default for DownloadConfig {
                 .join("DiliDown")
                 .to_string_lossy()
                 .to_string(),
-            concurrent_connections: 4,
-            chunk_size: 1024 * 1024,
+            concurrent_connections: 8,   // 增加到 8 并发，提升下载速度
+            chunk_size: 5 * 1024 * 1024, // 增加到 5MB，减少分块数量，提升效率
             quality: 120, // 默认 4K，会自动降级到最高可用质量
-            max_retry: 5,
-            timeout: 60,
+            max_retry: 3,  // 减少到 3 次，避免过长等待
+            timeout: 30,  // 减少到 30 秒，快速失败
         }
     }
 }

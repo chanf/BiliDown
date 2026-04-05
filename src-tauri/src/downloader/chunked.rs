@@ -66,7 +66,16 @@ impl ChunkedDownloader {
         let chunk_dir = chunk_dir_from_output(output_path);
         tokio::fs::create_dir_all(&chunk_dir).await?;
 
-        let plans = build_chunk_plans(total_size, self.config.chunk_size as u64, &chunk_dir);
+        // 动态分块策略：根据文件大小调整分块大小
+        // 小文件: 1MB, 中文件: 5MB, 大文件: 10MB
+        let dynamic_chunk_size = if total_size < 50 * 1024 * 1024 {
+            1024 * 1024  // 1MB
+        } else if total_size < 200 * 1024 * 1024 {
+            5 * 1024 * 1024  // 5MB
+        } else {
+            10 * 1024 * 1024  // 10MB
+        };
+        let plans = build_chunk_plans(total_size, dynamic_chunk_size, &chunk_dir);
         if plans.is_empty() {
             anyhow::bail!("分块规划失败，文件大小无效");
         }
@@ -96,7 +105,16 @@ impl ChunkedDownloader {
             });
         }
 
-        let concurrency = self.config.concurrent_connections.max(1);
+        // 动态并发策略：根据文件大小调整并发数
+        // 小文件(<50MB): 2并发, 中文件(50-200MB): 4并发, 大文件(>200MB): 8并发
+        let dynamic_concurrency = if total_size < 50 * 1024 * 1024 {
+            2
+        } else if total_size < 200 * 1024 * 1024 {
+            4
+        } else {
+            8
+        };
+        let concurrency = self.config.concurrent_connections.max(dynamic_concurrency).min(16); // 最大不超过16
         let mut queue: VecDeque<ChunkJob> = VecDeque::from(jobs);
         let mut join_set = JoinSet::new();
         let client = self.client.clone();
@@ -443,6 +461,13 @@ fn create_download_client() -> Client {
         .no_gzip()
         .no_brotli()
         .no_deflate()
+        .pool_max_idle_per_host(10)      // 增加 HTTP 连接池大小
+        .pool_idle_timeout(std::time::Duration::from_secs(90))  // keep-alive 90秒
+        .connect_timeout(std::time::Duration::from_secs(10))    // 连接超时 10秒
+        .http2_keep_alive_interval(std::time::Duration::from_secs(30))  // HTTP/2 keep-alive
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
+        .tcp_keepalive(std::time::Duration::from_secs(60))      // TCP keep-alive
+        .tcp_nodelay(true)                                       // 禁用 Nagle 算法
         .build()
         .unwrap_or_else(|_| Client::new())
 }

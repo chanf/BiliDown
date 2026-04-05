@@ -26,6 +26,10 @@ interface DownloadTask {
   status: Record<string, unknown> | string;
   video_progress: number;
   audio_progress: number;
+  video_size: number;
+  audio_size: number;
+  video_downloaded: number;
+  audio_downloaded: number;
   speed: number;
   save_path: string;
   filename: string;
@@ -39,6 +43,7 @@ interface DownloadConfig {
   quality: number;
   max_retry: number;
   timeout: number;
+  collection_mode: 'strict' | 'compat';
 }
 
 interface LogEntry {
@@ -132,6 +137,7 @@ function App() {
     quality: 80,
     max_retry: 3,
     timeout: 30,
+    collection_mode: 'strict',
   });
 
   async function parseUrl(inputUrl?: string) {
@@ -145,7 +151,10 @@ function App() {
     setError("");
     setSelectedVideos(new Set());
     try {
-      const res = await invoke<ParseResult>("parse_url", { url: targetUrl });
+      const res = await invoke<ParseResult>("parse_url", {
+      url: targetUrl,
+      collection_mode: config.collection_mode === 'compat' ? 'compat' : undefined
+    });
       setResult(res);
       setMainTab("parse");
 
@@ -962,21 +971,23 @@ function App() {
                       </div>
 
                       {(statusText === 'Downloading' || statusText === 'Paused') && (
-                        <div className="download-progress">
-                          <div className="progress-bar">
-                            <div
-                              className="progress-fill"
-                              style={{ width: `${(task.video_progress + task.audio_progress) / 2 * 100}%` }}
-                            />
+                        <>
+                          <div className="download-progress">
+                            <div className="progress-bar">
+                              <div
+                                className="progress-fill"
+                                style={{ width: `${(task.video_progress + task.audio_progress) / 2 * 100}%` }}
+                              />
+                            </div>
+                            <span className="progress-text">
+                              {Math.round((task.video_progress + task.audio_progress) / 2 * 100)}%
+                            </span>
                           </div>
-                          <span className="progress-text">
-                            {Math.round((task.video_progress + task.audio_progress) / 2 * 100)}%
-                          </span>
-                        </div>
-                        <div className="download-stats">
-                          <span className="download-speed">{formatSpeed(task.speed)}</span>
-                          <span className="download-time">{calculateRemainingTime(task)}</span>
-                        </div>
+                          <div className="download-stats">
+                            <span className="download-speed">{formatSpeed(task.speed)}</span>
+                            <span className="download-time">{calculateRemainingTime(task)}</span>
+                          </div>
+                        </>
                       )}
 
                       <div className="download-actions">
@@ -1085,6 +1096,24 @@ function App() {
                     <option value={64}>720P</option>
                     <option value={32}>480P</option>
                   </select>
+                </div>
+                <div className="config-item">
+                  <label>
+                    合集识别模式
+                    <span className="config-hint">影响视频合集/多P的识别方式</span>
+                  </label>
+                  <select
+                    value={config.collection_mode}
+                    onChange={(e) => setConfig({ ...config, collection_mode: e.target.value as 'strict' | 'compat' })}
+                  >
+                    <option value="strict">精准模式</option>
+                    <option value="compat">兼容模式</option>
+                  </select>
+                  <p className="config-help">
+                    {config.collection_mode === 'strict'
+                      ? '仅使用结构化数据，识别更准确'
+                      : '结构化数据优先 + HTML兜底，识别更全面'}
+                  </p>
                 </div>
                 <div className="config-item">
                   <label>最大重试次数</label>
