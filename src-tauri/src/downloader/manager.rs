@@ -8,6 +8,7 @@ use crate::downloader::{
     VideoMerger,
 };
 use crate::ffmpeg::FFmpegDetector;
+use crate::persistence;
 
 #[derive(Debug, Clone)]
 pub struct StartDownloadRequest {
@@ -73,6 +74,11 @@ impl<'a> DownloadManager<'a> {
             .insert(task_id.clone(), control.clone());
         self.emit_progress(&task_id).await?;
 
+        // 保存任务到文件
+        let tasks = self.state.tasks.lock().unwrap();
+        let _ = persistence::save_tasks(&tasks);
+        drop(tasks);
+
         let app_handle = self.app_handle.clone();
         let task_id_clone = task_id.clone();
         let request_clone = request.clone();
@@ -92,7 +98,7 @@ impl<'a> DownloadManager<'a> {
                 if !err.to_string().contains("任务已取消") {
                     update_task_and_emit(&state, &app_handle, &task_id_clone, |task| {
                         task.status = TaskStatus::Failed(err.to_string());
-                    });
+                    }, true); // 保存失败状态
                 }
             }
 
@@ -122,7 +128,7 @@ impl<'a> DownloadManager<'a> {
 
         update_task_and_emit(self.state, &self.app_handle, task_id, |task| {
             task.status = TaskStatus::Paused;
-        });
+        }, false);
         Ok(())
     }
 
@@ -141,7 +147,7 @@ impl<'a> DownloadManager<'a> {
             if task.status != TaskStatus::Completed {
                 task.status = TaskStatus::Downloading;
             }
-        });
+        }, false);
         Ok(())
     }
 
@@ -168,6 +174,11 @@ impl<'a> DownloadManager<'a> {
             }
         }
 
+        // 保存任务到文件
+        let tasks = self.state.tasks.lock().unwrap();
+        let _ = persistence::save_tasks(&tasks);
+        drop(tasks);
+
         Ok(())
     }
 
@@ -188,7 +199,7 @@ async fn run_download_pipeline(
 ) -> Result<()> {
     update_task_and_emit(state, app_handle, task_id, |task| {
         task.status = TaskStatus::Downloading;
-    });
+    }, false);
 
     // 验证 URL 可访问性
     eprintln!("验证视频 URL: {}", request.video_url.chars().take(80).collect::<String>());
@@ -215,7 +226,7 @@ async fn run_download_pipeline(
                     if task.status != TaskStatus::Paused {
                         task.status = TaskStatus::Downloading;
                     }
-                });
+                }, false);
             })
             .await
             .with_context(|| format!("视频下载失败\nURL: {}", request.video_url))
@@ -235,7 +246,7 @@ async fn run_download_pipeline(
                     if task.status != TaskStatus::Paused {
                         task.status = TaskStatus::Downloading;
                     }
-                });
+                }, false);
             })
             .await
             .with_context(|| format!("音频下载失败\nURL: {}", request.audio_url))
@@ -245,7 +256,7 @@ async fn run_download_pipeline(
 
     update_task_and_emit(state, app_handle, task_id, |task| {
         task.status = TaskStatus::Merging;
-    });
+    }, false);
 
     // 从任务状态中获取正确的保存路径（已包含合集子目录）
     let save_path = {
@@ -288,7 +299,7 @@ async fn run_download_pipeline(
         task.video_size = video_result.total;
         task.audio_size = audio_result.total;
         task.status = TaskStatus::Completed;
-    });
+    }, true); // 保存完成状态
 
     tokio::fs::remove_dir_all(&temp_dir).await.ok();
     Ok(())
@@ -299,6 +310,7 @@ fn update_task_and_emit<F>(
     app_handle: &tauri::AppHandle,
     task_id: &str,
     update: F,
+    save: bool,
 ) where
     F: FnOnce(&mut DownloadTask),
 {
@@ -338,6 +350,12 @@ fn update_task_and_emit<F>(
 
     if let Some(task) = snapshot {
         let _ = app_handle.emit("download-progress", task);
+
+        // 根据参数决定是否保存到文件
+        if save {
+            let tasks = state.tasks.lock().unwrap();
+            let _ = persistence::save_tasks(&tasks);
+        }
     }
 }
 

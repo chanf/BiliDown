@@ -4,11 +4,13 @@ mod commands;
 mod downloader;
 mod ffmpeg;
 mod logger;
+mod persistence;
 
 use commands::*;
 use downloader::DownloadState;
 use std::sync::Mutex;
 use std::path::PathBuf;
+use tauri::Manager;
 
 // 全局登录状态
 struct LoginState {
@@ -78,6 +80,22 @@ pub fn run() {
         .setup(|app| {
             // 初始化日志系统
             logger::init(app.handle().clone());
+
+            // 加载历史任务
+            let state = app.state::<DownloadState>();
+            if let Ok(persisted_tasks) = persistence::load_tasks() {
+                let mut tasks = state.tasks.lock().unwrap();
+                for (task_id, persisted_task) in persisted_tasks {
+                    // 只恢复非完成状态的任务
+                    let task = persisted_task.to_pending_task();
+                    tasks.insert(task_id, task);
+                }
+                eprintln!("✓ 已恢复 {} 个历史任务", tasks.len());
+            }
+
+            // 清理过期任务
+            let _ = persistence::cleanup_old_tasks();
+
             Ok(())
         })
         .manage(login_state)
