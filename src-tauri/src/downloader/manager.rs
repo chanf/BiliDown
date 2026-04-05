@@ -60,6 +60,8 @@ impl<'a> DownloadManager<'a> {
             filename,
             created_at: now,
             updated_at: now,
+            last_speed_update_time: None,
+            last_speed_downloaded: 0,
         };
 
         self.state.tasks.lock().unwrap().insert(task_id.clone(), task);
@@ -305,6 +307,29 @@ fn update_task_and_emit<F>(
         if let Some(task) = tasks.get_mut(task_id) {
             update(task);
             task.updated_at = current_timestamp();
+
+            // 计算速度
+            let current_time = task.updated_at;
+            let current_downloaded = task.video_downloaded + task.audio_downloaded;
+
+            if let Some(last_time) = task.last_speed_update_time {
+                let time_diff = current_time.saturating_sub(last_time);
+                let downloaded_diff = current_downloaded.saturating_sub(task.last_speed_downloaded);
+
+                // 只在有数据下载且时间差大于0.5秒时才更新速度，避免跳动
+                if downloaded_diff > 0 && time_diff > 500 {
+                    // 计算速度（字节/秒）
+                    let speed = (downloaded_diff as f64 / time_diff as f64) as u64;
+                    task.speed = speed;
+                    task.last_speed_update_time = Some(current_time);
+                    task.last_speed_downloaded = current_downloaded;
+                }
+            } else {
+                // 首次更新速度计算
+                task.last_speed_update_time = Some(current_time);
+                task.last_speed_downloaded = current_downloaded;
+            }
+
             Some(task.clone())
         } else {
             None

@@ -47,6 +47,11 @@ pub struct DownloadTask {
     pub filename: String,
     pub created_at: i64,
     pub updated_at: i64,
+    // 速度计算辅助字段（不序列化）
+    #[serde(skip)]
+    pub last_speed_update_time: Option<i64>,
+    #[serde(skip)]
+    pub last_speed_downloaded: u64,
 }
 
 /// 下载配置

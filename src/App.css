@@ -796,6 +796,24 @@ footer {
   text-align: right;
 }
 
+.download-stats {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+}
+
+.download-speed::before {
+  content: "📶";
+  margin-right: 0.3rem;
+}
+
+.download-time::before {
+  content: "⏱";
+  margin-right: 0.3rem;
+}
+
 .download-actions {
   display: flex;
   gap: 0.5rem;

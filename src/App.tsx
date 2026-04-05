@@ -69,6 +69,38 @@ function getErrorFromStatus(status: Record<string, unknown> | string): string | 
   return undefined;
 }
 
+// 格式化速度显示
+function formatSpeed(speed: number): string {
+  if (speed === 0) return '0 KB/s';
+  if (speed < 1024) return `${speed} B/s`;
+  if (speed < 1024 * 1024) return `${(speed / 1024).toFixed(1)} KB/s`;
+  return `${(speed / 1024 / 1024).toFixed(2)} MB/s`;
+}
+
+// 计算剩余时间
+function calculateRemainingTime(task: DownloadTask): string {
+  const totalSize = task.video_size + task.audio_size;
+  const downloaded = task.video_downloaded + task.audio_downloaded;
+  const remaining = totalSize - downloaded;
+
+  if (remaining <= 0 || task.speed === 0) {
+    return '计算中...';
+  }
+
+  const seconds = Math.ceil(remaining / task.speed);
+
+  if (seconds < 60) {
+    return `剩余 ${seconds} 秒`;
+  } else if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `剩余 ${minutes} 分钟`;
+  } else {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `剩余 ${hours} 小时 ${minutes} 分钟`;
+  }
+}
+
 function App() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -940,6 +972,10 @@ function App() {
                           <span className="progress-text">
                             {Math.round((task.video_progress + task.audio_progress) / 2 * 100)}%
                           </span>
+                        </div>
+                        <div className="download-stats">
+                          <span className="download-speed">{formatSpeed(task.speed)}</span>
+                          <span className="download-time">{calculateRemainingTime(task)}</span>
                         </div>
                       )}
 
