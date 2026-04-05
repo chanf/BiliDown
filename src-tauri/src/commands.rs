@@ -3,6 +3,7 @@ use crate::login::{BilibiliLogin, LoginStatus};
 use crate::downloader::{
     DownloadConfig, DownloadManager, DownloadState, DownloadTask, StartDownloadRequest,
 };
+use crate::history::{self, DownloadStatistics, HistoryEntry};
 use crate::LoginState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -370,4 +371,37 @@ pub fn open_download_dir(state: State<'_, DownloadState>) -> Result<(), String> 
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistorySearchRequest {
+    pub keyword: Option<String>,
+    pub status: Option<String>,
+    pub start_date: Option<i64>,
+    pub end_date: Option<i64>,
+    pub limit: Option<usize>,
+}
+
+#[tauri::command]
+pub async fn search_history(request: HistorySearchRequest) -> Result<Vec<HistoryEntry>, String> {
+    history::search_history(
+        request.keyword,
+        request.status,
+        request.start_date,
+        request.end_date,
+        request.limit.unwrap_or(100),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_download_statistics() -> Result<DownloadStatistics, String> {
+    history::calculate_statistics()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cleanup_history(days_to_keep: i64) -> Result<usize, String> {
+    history::cleanup_old_history(days_to_keep)
+        .map_err(|e| e.to_string())
 }

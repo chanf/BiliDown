@@ -5,6 +5,7 @@ mod downloader;
 mod ffmpeg;
 mod logger;
 mod persistence;
+mod history;
 
 use commands::*;
 use downloader::DownloadState;
@@ -115,6 +116,9 @@ pub fn run() {
             select_download_folder,
             open_download_dir,
             logout,
+            search_history,
+            get_download_statistics,
+            cleanup_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

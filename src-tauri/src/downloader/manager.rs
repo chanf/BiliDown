@@ -9,6 +9,7 @@ use crate::downloader::{
 };
 use crate::ffmpeg::FFmpegDetector;
 use crate::persistence;
+use crate::history::{self, HistoryEntry};
 
 #[derive(Debug, Clone)]
 pub struct StartDownloadRequest {
@@ -314,9 +315,10 @@ fn update_task_and_emit<F>(
 ) where
     F: FnOnce(&mut DownloadTask),
 {
-    let snapshot = {
+    let (task_snapshot, should_add_history) = {
         let mut tasks = state.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(task_id) {
+            let old_status = task.status.clone();
             update(task);
             task.updated_at = current_timestamp();
 
@@ -342,19 +344,31 @@ fn update_task_and_emit<F>(
                 task.last_speed_downloaded = current_downloaded;
             }
 
-            Some(task.clone())
+            // 检查是否应该添加历史记录（状态变为Completed或Failed）
+            let was_not_finished = !matches!(old_status, TaskStatus::Completed | TaskStatus::Failed(_));
+            let is_now_finished = matches!(task.status, TaskStatus::Completed | TaskStatus::Failed(_));
+            let should_add = was_not_finished && is_now_finished;
+
+            (Some(task.clone()), should_add)
         } else {
-            None
+            (None, false)
         }
     };
 
-    if let Some(task) = snapshot {
-        let _ = app_handle.emit("download-progress", task);
+    if let Some(ref task) = task_snapshot {
+        let _ = app_handle.emit("download-progress", task.clone());
 
         // 根据参数决定是否保存到文件
         if save {
             let tasks = state.tasks.lock().unwrap();
             let _ = persistence::save_tasks(&tasks);
+        }
+
+        // 添加历史记录
+        if should_add_history {
+            let entry = create_history_entry(task);
+            let _ = history::add_history_entry(entry);
+            eprintln!("✓ 已添加历史记录: {}", task.title);
         }
     }
 }
@@ -444,4 +458,41 @@ fn current_timestamp() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn create_history_entry(task: &DownloadTask) -> HistoryEntry {
+    let (status, completed_at, error_message) = match &task.status {
+        TaskStatus::Completed => (
+            "Completed".to_string(),
+            Some(task.updated_at),
+            None,
+        ),
+        TaskStatus::Failed(msg) => (
+            format!("Failed:{}", msg),
+            Some(task.updated_at),
+            Some(msg.clone()),
+        ),
+        _ => (
+            "Pending".to_string(),
+            None,
+            None,
+        ),
+    };
+
+    HistoryEntry {
+        task_id: task.task_id.clone(),
+        bvid: task.bvid.clone(),
+        cid: task.cid,
+        title: task.title.clone(),
+        part_title: task.part_title.clone(),
+        status,
+        video_size: task.video_size,
+        audio_size: task.audio_size,
+        total_size: task.video_size + task.audio_size,
+        save_path: task.save_path.clone(),
+        filename: task.filename.clone(),
+        created_at: task.created_at,
+        completed_at,
+        error_message,
+    }
 }

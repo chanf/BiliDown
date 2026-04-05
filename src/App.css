@@ -1257,3 +1257,154 @@ footer {
   border: 1px solid #91d5ff;
   color: #0958d9;
 }
+
+/* 历史记录 */
+.history-section {
+  background: var(--card-bg);
+  padding: 1rem;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  margin-bottom: 0.75rem;
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.history-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+
+.history-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.history-search {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.history-search input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.history-search select {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.history-item {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  transition: all 0.2s;
+}
+
+.history-item:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(0, 174, 236, 0.1);
+}
+
+.history-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.history-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.history-part-title {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.history-meta {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.history-status {
+  font-weight: 600;
+}
+
+.history-size,
+.history-time {
+  color: var(--text-secondary);
+}
+
+.history-error {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(255, 77, 79, 0.1);
+  border-left: 3px solid var(--error);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: var(--error);
+}
+
+/* 统计模态框 */
+.statistics-modal {
+  max-width: 600px;
+}
+
+.statistics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+}
+
+.stat-item {
+  padding: 1rem;
+  background: var(--bg);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.stat-label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.stat-value.stat-success {
+  color: var(--success, #52c41a);
+}
+
+.stat-value.stat-error {
+  color: var(--error);
+}

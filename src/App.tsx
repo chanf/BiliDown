@@ -52,6 +52,34 @@ interface LogEntry {
   timestamp: string;
 }
 
+interface HistoryEntry {
+  task_id: string;
+  bvid: string;
+  cid: number;
+  title: string;
+  part_title?: string;
+  status: string;
+  video_size: number;
+  audio_size: number;
+  total_size: number;
+  save_path: string;
+  filename: string;
+  created_at: number;
+  completed_at?: number;
+  error_message?: string;
+}
+
+interface DownloadStatistics {
+  total_downloads: number;
+  completed_downloads: number;
+  failed_downloads: number;
+  total_bytes: number;
+  success_rate: number;
+  average_speed: number;
+  last_7_days: number;
+  last_30_days: number;
+}
+
 // Helper function to extract status string from Rust enum serialization
 function getStatusText(status: Record<string, unknown> | string): string {
   if (typeof status === 'string') {
@@ -238,7 +266,7 @@ function App() {
 
   const [selectedVideos, setSelectedVideos] = useState<Set<number>>(new Set());
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
-  const [mainTab, setMainTab] = useState<"parse" | "download">("parse");
+  const [mainTab, setMainTab] = useState<"parse" | "download" | "history">("parse");
   const [downloadTab, setDownloadTab] = useState<"active" | "completed">("active");
   const [clearingCompleted, setClearingCompleted] = useState(false);
   const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(new Set());
@@ -250,6 +278,14 @@ function App() {
   const [showLogPanel, setShowLogPanel] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const [toasts, setToasts] = useState<Array<{id: string; message: string; type: 'error' | 'warning' | 'success' | 'info'}>>([]);
+
+  // 历史记录相关状态
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySearchKeyword, setHistorySearchKeyword] = useState('');
+  const [historySearchStatus, setHistorySearchStatus] = useState<'all' | 'Completed' | 'Failed'>('all');
+  const [statistics, setStatistics] = useState<DownloadStatistics | null>(null);
+  const [showStatistics, setShowStatistics] = useState(false);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
     concurrent_connections: 4,
@@ -765,6 +801,13 @@ function App() {
     }
   }, [logs, showLogPanel]);
 
+  // 加载历史记录
+  useEffect(() => {
+    if (mainTab === 'history') {
+      loadHistory();
+    }
+  }, [mainTab, historySearchKeyword, historySearchStatus]);
+
   async function loadConfig() {
     try {
       const loadedConfig = await invoke<DownloadConfig>("get_download_config");
@@ -835,6 +878,66 @@ function App() {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  // 历史记录相关函数
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const result = await invoke<HistoryEntry[]>("search_history", {
+        keyword: historySearchKeyword || undefined,
+        status: historySearchStatus === 'all' ? undefined : historySearchStatus,
+        limit: 100
+      });
+      setHistoryEntries(result);
+    } catch (e) {
+      addToast(`加载历史记录失败: ${String(e)}`, 'error');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function loadStatistics() {
+    try {
+      const stats = await invoke<DownloadStatistics>("get_download_statistics");
+      setStatistics(stats);
+      setShowStatistics(true);
+    } catch (e) {
+      addToast(`加载统计数据失败: ${String(e)}`, 'error');
+    }
+  }
+
+  async function cleanupHistory() {
+    if (!confirm('确定要清理30天前的历史记录吗？')) return;
+
+    try {
+      const removed = await invoke<number>("cleanup_history", { daysToKeep: 30 });
+      addToast(`已清理 ${removed} 条历史记录`, 'success');
+      loadHistory();
+    } catch (e) {
+      addToast(`清理历史记录失败: ${String(e)}`, 'error');
+    }
+  }
+
+  // 格式化文件大小
+  function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  // 格式化时间戳
+  function formatTimestamp(timestamp: number): string {
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
   }
 
   const activeDownloadTasks = downloadTasks.filter(
@@ -947,6 +1050,13 @@ function App() {
           >
             下载列表
             <span className="main-tab-count">{downloadTasks.length}</span>
+          </button>
+          <button
+            type="button"
+            className={`main-tab-btn ${mainTab === "history" ? "active" : ""}`}
+            onClick={() => setMainTab("history")}
+          >
+            历史记录
           </button>
         </section>
 
@@ -1178,6 +1288,122 @@ function App() {
               </div>
             )}
           </section>
+        )}
+
+        {mainTab === "history" && (
+          <section className="history-section">
+            <div className="history-header">
+              <h2>📊 下载历史</h2>
+              <div className="history-controls">
+                <button onClick={loadStatistics} className="btn-secondary">
+                  📈 统计
+                </button>
+                <button onClick={cleanupHistory} className="btn-secondary">
+                  🗑️ 清理
+                </button>
+              </div>
+            </div>
+
+            <div className="history-search">
+              <input
+                type="text"
+                placeholder="搜索标题..."
+                value={historySearchKeyword}
+                onChange={(e) => setHistorySearchKeyword(e.target.value)}
+              />
+              <select
+                value={historySearchStatus}
+                onChange={(e) => setHistorySearchStatus(e.target.value as 'all' | 'Completed' | 'Failed')}
+              >
+                <option value="all">全部状态</option>
+                <option value="Completed">已完成</option>
+                <option value="Failed">失败</option>
+              </select>
+            </div>
+
+            {historyLoading ? (
+              <p className="empty">加载中...</p>
+            ) : historyEntries.length === 0 ? (
+              <p className="empty">暂无历史记录</p>
+            ) : (
+              <div className="history-list">
+                {historyEntries.map((entry) => {
+                  const status = entry.status.startsWith('Failed:') ? 'Failed' : entry.status;
+                  const errorMessage = entry.status.startsWith('Failed:') ? entry.status.substring(7) : entry.error_message;
+
+                  return (
+                    <div key={entry.task_id} className={`history-item history-${status.toLowerCase()}`}>
+                      <div className="history-info">
+                        <span className="history-title">
+                          {entry.part_title || entry.title}
+                        </span>
+                        {entry.part_title && (
+                          <span className="history-part-title">{entry.title}</span>
+                        )}
+                      </div>
+                      <div className="history-meta">
+                        <span className={`history-status status-${status.toLowerCase()}`}>
+                          {status === 'Completed' && '✓ 完成'}
+                          {status === 'Failed' && '✗ 失败'}
+                          {status === 'Pending' && '⏳ 等待'}
+                        </span>
+                        <span className="history-size">{formatBytes(entry.total_size)}</span>
+                        <span className="history-time">{formatTimestamp(entry.created_at)}</span>
+                      </div>
+                      {errorMessage && (
+                        <div className="history-error">
+                          {errorMessage}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        {showStatistics && statistics && (
+          <div className="modal-overlay" onClick={() => setShowStatistics(false)}>
+            <div className="modal-content statistics-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>📊 下载统计</h2>
+                <button className="close-btn" onClick={() => setShowStatistics(false)}>✕</button>
+              </div>
+              <div className="modal-body">
+                <div className="statistics-grid">
+                  <div className="stat-item">
+                    <div className="stat-label">总下载量</div>
+                    <div className="stat-value">{statistics.total_downloads}</div>
+                  </div>
+                  <div className="stat-item">
+                    <div className="stat-label">已完成</div>
+                    <div className="stat-value stat-success">{statistics.completed_downloads}</div>
+                  </div>
+                  <div className="stat-item">
+                    <div className="stat-label">失败</div>
+                    <div className="stat-value stat-error">{statistics.failed_downloads}</div>
+                  </div>
+                  <div className="stat-item">
+                    <div className="stat-label">成功率</div>
+                    <div className="stat-value">{statistics.success_rate.toFixed(1)}%</div>
+                  </div>
+                  <div className="stat-item">
+                    <div className="stat-label">总下载量</div>
+                    <div className="stat-value">{formatBytes(statistics.total_bytes)}</div>
+                  </div>
+                  <div className="stat-item">
+                    <div className="stat-label">最近7天</div>
+                    <div className="stat-value">{statistics.last_7_days}</div>
+                  </div>
+                  <div className="stat-item">
+                    <div className="stat-label">最近30天</div>
+                    <div className="stat-value">{statistics.last_30_days}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {showConfig && (
