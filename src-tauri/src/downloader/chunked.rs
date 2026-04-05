@@ -7,6 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 
 use crate::downloader::{DownloadConfig, TaskControl};
+use crate::error_classification::{classify_error, get_retry_strategy, calculate_retry_delay, should_fast_fail};
 
 const PAUSE_POLL_MS: u64 = 200;
 
@@ -38,8 +39,9 @@ pub struct ChunkedDownloader {
 
 impl ChunkedDownloader {
     pub fn new(config: DownloadConfig) -> Self {
+        let client = create_download_client(&config);
         Self {
-            client: create_download_client(),
+            client,
             config,
         }
     }
@@ -349,19 +351,32 @@ async fn fetch_chunk_with_retry(
                 return Ok(bytes);
             }
             Err(err) => {
+                let error_msg = err.to_string();
+                let error_short = error_msg.chars().take(100).collect::<String>();
                 last_error = Some(err);
-                if attempt < config.max_retry {
-                    let delay = 2u64.pow(attempt as u32);
+
+                // 检查是否应该快速失败
+                let error_category = classify_error(&error_msg);
+                if should_fast_fail(error_category, attempt) {
                     eprintln!(
-                        "⚠ 分块下载失败，将在 {} 秒后重试 ({}/{}): range={}-{}, 错误: {}",
-                        delay,
-                        attempt + 1,
-                        config.max_retry + 1,
-                        start,
-                        end,
-                        last_error.as_ref().map(|e| e.to_string().chars().take(100).collect::<String>()).unwrap_or_default()
+                        "✗ 分块下载快速失败: range={}-{}, 错误类型: {:?}, 错误: {}",
+                        start, end, error_category, error_short
                     );
-                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                    return Err(anyhow::anyhow!(error_msg));
+                }
+
+                // 获取重试策略
+                let retry_strategy = get_retry_strategy(error_category, config.max_retry);
+                if attempt < retry_strategy.max_retries && retry_strategy.should_retry {
+                    let delay = calculate_retry_delay(attempt, &retry_strategy);
+                    eprintln!(
+                        "⚠ 分块下载失败，将在 {} 秒后重试 ({}/{}): range={}-{}, 错误类型: {:?}",
+                        delay.as_secs(),
+                        attempt + 1,
+                        retry_strategy.max_retries + 1,
+                        start, end, error_category
+                    );
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
@@ -372,7 +387,7 @@ async fn fetch_chunk_with_retry(
 
 async fn fetch_chunk(
     client: &Client,
-    config: &DownloadConfig,
+    _config: &DownloadConfig,  // 保留参数以便将来使用
     url: &str,
     start: u64,
     end: u64,
@@ -392,8 +407,7 @@ async fn fetch_chunk(
         .header("Sec-Fetch-Dest", "video")
         .header("Accept", "*/*")
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-        .timeout(std::time::Duration::from_secs(config.timeout))
-        .send()
+        .send()  // 使用客户端级别的超时设置（connect_timeout + read_timeout）
         .await?;
 
     if response.status().as_u16() == 416 {
@@ -456,14 +470,28 @@ fn parse_total_from_content_range(content_range: &str) -> Option<u64> {
         .and_then(|v| v.parse::<u64>().ok())
 }
 
-fn create_download_client() -> Client {
+fn create_download_client(config: &DownloadConfig) -> Client {
+    // 向后兼容：如果配置中没有 connect_timeout 和 read_timeout，则使用 timeout
+    let connect_timeout = if config.connect_timeout > 0 {
+        std::time::Duration::from_secs(config.connect_timeout)
+    } else {
+        std::time::Duration::from_secs(config.timeout)
+    };
+
+    let read_timeout = if config.read_timeout > 0 {
+        std::time::Duration::from_secs(config.read_timeout)
+    } else {
+        std::time::Duration::from_secs(config.timeout)
+    };
+
     Client::builder()
         .no_gzip()
         .no_brotli()
         .no_deflate()
         .pool_max_idle_per_host(10)      // 增加 HTTP 连接池大小
         .pool_idle_timeout(std::time::Duration::from_secs(90))  // keep-alive 90秒
-        .connect_timeout(std::time::Duration::from_secs(10))    // 连接超时 10秒
+        .connect_timeout(connect_timeout)    // 连接超时（从配置读取，向后兼容）
+        .read_timeout(read_timeout)           // 读取超时（从配置读取，向后兼容）
         .http2_keep_alive_interval(std::time::Duration::from_secs(30))  // HTTP/2 keep-alive
         .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
         .tcp_keepalive(std::time::Duration::from_secs(60))      // TCP keep-alive

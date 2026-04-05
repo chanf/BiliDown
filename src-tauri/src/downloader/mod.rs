@@ -63,6 +63,8 @@ pub struct DownloadConfig {
     pub quality: i32,
     pub max_retry: usize,
     pub timeout: u64,
+    pub connect_timeout: u64,
+    pub read_timeout: u64,
 }
 
 pub const CONFIG_FILE: &str = "config.json";
@@ -116,8 +118,10 @@ impl Default for DownloadConfig {
             concurrent_connections: 8,   // 增加到 8 并发，提升下载速度
             chunk_size: 5 * 1024 * 1024, // 增加到 5MB，减少分块数量，提升效率
             quality: 120, // 默认 4K，会自动降级到最高可用质量
-            max_retry: 3,  // 减少到 3 次，避免过长等待
-            timeout: 30,  // 减少到 30 秒，快速失败
+            max_retry: 5,  // 重试次数：5次
+            timeout: 30,  // 兼容旧配置（已弃用，使用 connect_timeout 和 read_timeout）
+            connect_timeout: 10,  // 连接超时：10秒（快速失败）
+            read_timeout: 60,     // 读取超时：60秒（允许慢速下载）
         }
     }
 }

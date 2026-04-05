@@ -6,6 +6,7 @@ mod ffmpeg;
 mod logger;
 mod persistence;
 mod history;
+mod error_classification;
 
 use commands::*;
 use downloader::DownloadState;

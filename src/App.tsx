@@ -43,6 +43,8 @@ interface DownloadConfig {
   quality: number;
   max_retry: number;
   timeout: number;
+  connect_timeout: number;
+  read_timeout: number;
   collection_mode: 'strict' | 'compat';
 }
 
@@ -293,6 +295,8 @@ function App() {
     quality: 80,
     max_retry: 3,
     timeout: 30,
+    connect_timeout: 10,
+    read_timeout: 60,
     collection_mode: 'strict',
   });
 
@@ -1486,6 +1490,34 @@ function App() {
                     value={config.max_retry}
                     onChange={(e) => setConfig({ ...config, max_retry: parseInt(e.target.value) })}
                   />
+                </div>
+                <div className="config-item">
+                  <label>
+                    连接超时（秒）
+                    <span className="config-hint">建立连接的最大等待时间</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="5"
+                    max="60"
+                    value={config.connect_timeout}
+                    onChange={(e) => setConfig({ ...config, connect_timeout: parseInt(e.target.value) })}
+                  />
+                  <p className="config-help">连接超时过短可能导致网络慢时无法建立连接</p>
+                </div>
+                <div className="config-item">
+                  <label>
+                    读取超时（秒）
+                    <span className="config-hint">单次数据读取的最大等待时间</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="30"
+                    max="300"
+                    value={config.read_timeout}
+                    onChange={(e) => setConfig({ ...config, read_timeout: parseInt(e.target.value) })}
+                  />
+                  <p className="config-help">读取超时应大于连接超时，慢速下载需要更长等待时间</p>
                 </div>
                 <div className="config-actions">
                   <button className="btn-secondary" onClick={() => setShowConfig(false)}>取消</button>
