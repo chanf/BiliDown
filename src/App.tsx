@@ -74,6 +74,126 @@ function getErrorFromStatus(status: Record<string, unknown> | string): string | 
   return undefined;
 }
 
+// 错误类型定义
+type ErrorCategory = 'network' | 'server' | 'file' | 'merge' | 'permission' | 'unknown';
+
+interface ErrorInfo {
+  category: ErrorCategory;
+  shortMessage: string;
+  suggestion: string;
+}
+
+// 错误分类和友好提示
+function classifyError(errorMsg: string): ErrorInfo {
+  const msg = errorMsg.toLowerCase();
+
+  // 网络错误
+  if (msg.includes('timeout') || msg.includes('超时')) {
+    return {
+      category: 'network',
+      shortMessage: '网络超时',
+      suggestion: '请检查网络连接后重试'
+    };
+  }
+  if (msg.includes('connection') || msg.includes('连接') || msg.includes('connect')) {
+    return {
+      category: 'network',
+      shortMessage: '连接失败',
+      suggestion: '网络连接异常，请稍后重试'
+    };
+  }
+
+  // 服务器错误
+  if (msg.includes('403') || msg.includes('forbidden')) {
+    return {
+      category: 'server',
+      shortMessage: '访问被拒绝',
+      suggestion: '视频可能需要登录或会员权限'
+    };
+  }
+  if (msg.includes('404') || msg.includes('not found')) {
+    return {
+      category: 'server',
+      shortMessage: '视频不存在',
+      suggestion: '视频可能已被删除或设为私享'
+    };
+  }
+  if (msg.includes('416') || msg.includes('range')) {
+    return {
+      category: 'server',
+      shortMessage: '下载范围错误',
+      suggestion: '请删除缓存后重新下载'
+    };
+  }
+  if (msg.includes('status') || msg.includes('状态码')) {
+    return {
+      category: 'server',
+      shortMessage: '服务器错误',
+      suggestion: 'B站服务器暂时不可用，请稍后重试'
+    };
+  }
+
+  // 文件错误
+  if (msg.includes('文件') && (msg.includes('不存在') || msg.includes('not exist'))) {
+    return {
+      category: 'file',
+      shortMessage: '文件丢失',
+      suggestion: '下载文件损坏，请重新下载'
+    };
+  }
+  if (msg.includes('磁盘') || msg.includes('disk') || msg.includes('space')) {
+    return {
+      category: 'file',
+      shortMessage: '磁盘空间不足',
+      suggestion: '请清理磁盘空间后重试'
+    };
+  }
+  if (msg.includes('校验失败') || msg.includes('不匹配')) {
+    return {
+      category: 'file',
+      shortMessage: '文件校验失败',
+      suggestion: '下载文件损坏，请重新下载'
+    };
+  }
+
+  // 合并错误
+  if (msg.includes('ffmpeg') || msg.includes('合并') || msg.includes('merge')) {
+    return {
+      category: 'merge',
+      shortMessage: '音视频合并失败',
+      suggestion: 'FFmpeg处理失败，请检查视频源'
+    };
+  }
+
+  // 权限错误
+  if (msg.includes('权限') || msg.includes('permission') || msg.includes('denied')) {
+    return {
+      category: 'permission',
+      shortMessage: '权限不足',
+      suggestion: '请检查下载目录的写入权限'
+    };
+  }
+
+  // 默认未知错误
+  return {
+    category: 'unknown',
+    shortMessage: '下载失败',
+    suggestion: '请查看日志了解详情'
+  };
+}
+
+// 获取错误图标
+function getErrorIcon(category: ErrorCategory): string {
+  switch (category) {
+    case 'network': return '🌐';
+    case 'server': return '🔴';
+    case 'file': return '📁';
+    case 'merge': return '🎬';
+    case 'permission': return '🔒';
+    default: return '⚠️';
+  }
+}
+
 // 格式化速度显示
 function formatSpeed(speed: number): string {
   if (speed === 0) return '0 KB/s';
@@ -956,6 +1076,12 @@ function App() {
                     ? task.part_title
                     : task.title;
                   const isRetrying = retryingTaskIds.has(task.task_id);
+
+                  // 错误分类和格式化
+                  let errorInfo: ErrorInfo | null = null;
+                  if (statusText === 'Failed' && errorText) {
+                    errorInfo = classifyError(errorText);
+                  }
                   return (
                     <div key={task.task_id} className="download-item">
                       <div className="download-info">
@@ -1022,7 +1148,17 @@ function App() {
                       </div>
 
                       {statusText === 'Failed' && (
-                        <p className="download-error">{errorText || '下载失败'}</p>
+                        <p className="download-error" title={errorText || '下载失败'}>
+                          {errorInfo ? (
+                            <>
+                              <span className="error-icon">{getErrorIcon(errorInfo.category)}</span>
+                              <span className="error-category">{errorInfo.shortMessage}</span>
+                              <span className="error-suggestion">{errorInfo.suggestion}</span>
+                            </>
+                          ) : (
+                            errorText || '下载失败'
+                          )}
+                        </p>
                       )}
                     </div>
                   );
