@@ -7,9 +7,11 @@ mod logger;
 mod persistence;
 mod history;
 mod error_classification;
+mod platform;
 
 use commands::*;
 use downloader::DownloadState;
+use platform::ClientFactory;
 use std::sync::Mutex;
 use std::path::PathBuf;
 use tauri::Manager;
@@ -76,6 +78,9 @@ pub fn run() {
         eprintln!("已加载保存的登录凭证");
     }
 
+    // 初始化平台客户端工厂
+    let client_factory = ClientFactory::default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -102,6 +107,7 @@ pub fn run() {
         })
         .manage(login_state)
         .manage(download_state)
+        .manage(client_factory)
         .invoke_handler(tauri::generate_handler![
             parse_url,
             read_clipboard_text,
@@ -120,6 +126,7 @@ pub fn run() {
             search_history,
             get_download_statistics,
             cleanup_history,
+            get_cookies_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

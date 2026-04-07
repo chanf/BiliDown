@@ -583,6 +583,27 @@ main {
 .modal-body {
   padding: 1.5rem;
   text-align: center;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+}
+
+/* 美化滚动条 */
+.modal-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.modal-body::-webkit-scrollbar-track {
+  background: var(--bg);
+  border-radius: 4px;
+}
+
+.modal-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.modal-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
 }
 
 .qrcode-container {
@@ -1407,4 +1428,103 @@ footer {
 
 .stat-value.stat-error {
   color: var(--error);
+}
+
+/* ==================== Cookies 管理样式 ==================== */
+
+.config-section {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.config-section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 1rem;
+}
+
+.cookies-item {
+  background: var(--bg-hover);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.cookies-platform-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.platform-name {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.cookie-status {
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.cookie-status.status-valid {
+  background: var(--success-light, #f6ffed);
+  color: var(--success, #52c41a);
+  border: 1px solid var(--success, #52c41a);
+}
+
+.cookie-status.status-invalid {
+  background: var(--error-light, #fff2f0);
+  color: var(--error, #ff4d4f);
+  border: 1px solid var(--error, #ff4d4f);
+}
+
+.cookie-status.status-expired {
+  background: var(--warning-light, #fffbe6);
+  color: var(--warning, #faad14);
+  border: 1px solid var(--warning, #faad14);
+}
+
+.cookie-status.status-notfound {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.cookie-status.status-loading {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.cookies-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.cookies-actions button {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+}
+
+.cookies-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

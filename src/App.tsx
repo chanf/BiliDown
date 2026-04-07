@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -80,6 +80,11 @@ interface DownloadStatistics {
   average_speed: number;
   last_7_days: number;
   last_30_days: number;
+}
+
+interface CookiesStatusResponse {
+  bilibili: 'valid' | 'invalid' | 'expired' | 'notfound';
+  youtube: 'valid' | 'invalid' | 'expired' | 'notfound';
 }
 
 // Helper function to extract status string from Rust enum serialization
@@ -287,6 +292,11 @@ function App() {
   const [historySearchKeyword, setHistorySearchKeyword] = useState('');
   const [historySearchStatus, setHistorySearchStatus] = useState<'all' | 'Completed' | 'Failed'>('all');
   const [statistics, setStatistics] = useState<DownloadStatistics | null>(null);
+
+  // Cookies 管理相关状态
+  const [cookiesStatus, setCookiesStatus] = useState<CookiesStatusResponse | null>(null);
+  const [importingCookies, setImportingCookies] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [showStatistics, setShowStatistics] = useState(false);
   const [config, setConfig] = useState<DownloadConfig>({
     save_path: '',
@@ -830,6 +840,125 @@ function App() {
       addToast(`保存设置失败: ${String(e)}`, 'error');
     }
   }
+
+  // 加载 Cookies 状态
+  const loadCookiesStatus = useCallback(async function() {
+    try {
+      console.log("🔄 开始加载 Cookies 状态...");
+      const status = await invoke<CookiesStatusResponse>("get_cookies_status");
+      console.log("✅ Cookies 状态加载成功:", status);
+      console.log("✅ 调用 setCookiesStatus 之前的状态:", cookiesStatus);
+      setCookiesStatus(status);
+      // 使用 setTimeout 确保状态更新完成
+      setTimeout(() => {
+        console.log("✅ setCookiesStatus 之后的cookiesStatus:", cookiesStatus);
+      }, 50);
+    } catch (e) {
+      console.error("❌ 加载 Cookies 状态失败:", e);
+      // 显示错误提示给用户
+      addToast(`加载状态失败: ${String(e)}`, 'error');
+      // 设置默认状态，避免显示 null
+      setCookiesStatus({
+        bilibili: 'notfound',
+        youtube: 'notfound',
+      });
+    }
+  }, []);
+
+  // 当设置对话框打开时加载 Cookies 状态
+  useEffect(() => {
+    if (showConfig) {
+      loadCookiesStatus();
+    }
+  }, [showConfig, loadCookiesStatus]);
+
+  // 导入 YouTube Cookies
+  async function handleImportYouTubeCookies() {
+    const fileInput = fileInputRef.current;
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+      return;
+    }
+
+    const file = fileInput.files[0];
+    setImportingCookies(true);
+
+    try {
+      // 读取文件内容
+      const text = await file.text();
+
+      console.log("🔄 开始导入 YouTube cookies...");
+      console.log("文件大小:", text.length, "字节");
+
+      // 调用后端导入命令，传递文件内容
+      await invoke("import_youtube_cookies", { content: text });
+
+      console.log("✅ Cookies 文件导入成功");
+
+      addToast("YouTube Cookies 导入成功", 'success');
+
+      // 添加延迟确保文件写入完成
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // 直接调用 get_cookies_status 而不是依赖 loadCookiesStatus
+      console.log("🔄 刷新状态...");
+      const newStatus = await invoke<CookiesStatusResponse>("get_cookies_status");
+      console.log("✅ 状态刷新成功:", newStatus);
+      console.log("✅ 准备更新状态，当前状态:", cookiesStatus);
+
+      setCookiesStatus(newStatus);
+
+      // 多次检查状态更新
+      setTimeout(() => {
+        console.log("✅ 100ms后的状态:", cookiesStatus);
+      }, 100);
+
+      setTimeout(() => {
+        console.log("✅ 500ms后的状态:", cookiesStatus);
+      }, 500);
+    } catch (e) {
+      console.error("❌ 导入失败:", e);
+      addToast(`导入 Cookies 失败: ${String(e)}`, 'error');
+    } finally {
+      setImportingCookies(false);
+      if (fileInput) {
+        fileInput.value = ''; // 清空文件选择
+      }
+    }
+  }
+
+  // 清除 YouTube Cookies
+  async function handleClearYouTubeCookies() {
+    try {
+      await invoke("clear_youtube_cookies");
+      addToast("YouTube Cookies 已清除", 'success');
+      await loadCookiesStatus(); // 刷新状态
+    } catch (e) {
+      addToast(`清除 Cookies 失败: ${String(e)}`, 'error');
+    }
+  }
+
+  // 获取 Cookies 状态文本
+  function getCookiesStatusText(status?: 'valid' | 'invalid' | 'expired' | 'notfound'): string {
+    switch (status) {
+      case 'valid': return '✓ 有效';
+      case 'invalid': return '✗ 无效';
+      case 'expired': return '⚠ 已过期';
+      case 'notfound': return '○ 未导入';
+      default: return '○ 未导入';
+    }
+  }
+
+  // 获取 Cookies 状态样式类
+  function getCookiesStatusClass(status?: 'valid' | 'invalid' | 'expired' | 'notfound'): string {
+    switch (status) {
+      case 'valid': return 'status-valid';
+      case 'invalid': return 'status-invalid';
+      case 'expired': return 'status-expired';
+      case 'notfound': return 'status-notfound';
+      default: return 'status-notfound';
+    }
+  }
+
 
   async function copyLogs() {
     if (logs.length === 0) {
@@ -1519,6 +1648,74 @@ function App() {
                   />
                   <p className="config-help">读取超时应大于连接超时，慢速下载需要更长等待时间</p>
                 </div>
+
+                {/* Cookies 管理区域 */}
+                <div className="config-section">
+                  <h3 className="config-section-title">Cookies 管理</h3>
+
+                  {/* B 站 Cookies */}
+                  <div className="config-item cookies-item">
+                    <div className="cookies-platform-info">
+                      <span className="platform-name">B 站</span>
+                      <span className={`cookie-status ${getCookiesStatusClass(cookiesStatus?.bilibili || 'notfound')}`}>
+                        {getCookiesStatusText(cookiesStatus?.bilibili || 'notfound')}
+                      </span>
+                    </div>
+                    <p className="config-help">
+                      {cookiesStatus?.bilibili === 'valid'
+                        ? '已登录，可下载会员专享内容'
+                        : '请使用右上角的扫码登录功能'}
+                    </p>
+                  </div>
+
+                  {/* YouTube Cookies */}
+                  <div className="config-item cookies-item">
+                    <div className="cookies-platform-info">
+                      <span className="platform-name">YouTube</span>
+                      <span className={`cookie-status ${getCookiesStatusClass(cookiesStatus?.youtube || 'notfound')}`}>
+                        {getCookiesStatusText(cookiesStatus?.youtube || 'notfound')}
+                      </span>
+                    </div>
+                    <div className="cookies-actions">
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".txt"
+                        onChange={handleImportYouTubeCookies}
+                        style={{ display: 'none' }}
+                      />
+                      <button
+                        className="btn-secondary"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={importingCookies}
+                      >
+                        {importingCookies ? '导入中...' : '导入 Cookies'}
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        onClick={handleClearYouTubeCookies}
+                        disabled={cookiesStatus?.youtube === 'notfound' || cookiesStatus?.youtube === undefined}
+                      >
+                        清除
+                      </button>
+                      <button
+                        className="btn-secondary btn-debug"
+                        onClick={async () => {
+                          console.log("🔄 手动刷新状态...");
+                          await loadCookiesStatus();
+                          console.log("✅ 刷新完成，当前状态:", cookiesStatus);
+                        }}
+                      >
+                        🔄 刷新状态
+                      </button>
+                    </div>
+                    <p className="config-help">
+                      需要导入 Netscape 格式的 cookies 文件
+                      {cookiesStatus && `当前状态: ${JSON.stringify(cookiesStatus)}`}
+                    </p>
+                  </div>
+                </div>
+
                 <div className="config-actions">
                   <button className="btn-secondary" onClick={() => setShowConfig(false)}>取消</button>
                   <button className="btn-primary" onClick={saveConfig}>保存</button>

@@ -402,3 +402,72 @@ pub async fn cleanup_history(days_to_keep: i64) -> Result<usize, String> {
     history::cleanup_old_history(days_to_keep)
         .map_err(|e| e.to_string())
 }
+
+// ========== YouTube Cookies Commands ==========
+
+use crate::platform::{CookiesStatus, Platform};
+
+#[tauri::command]
+pub async fn get_cookies_status(state: State<'_, crate::platform::ClientFactory>) -> Result<CookiesStatusResponse, String> {
+    let bilibili_client = state.get_client(Platform::Bilibili)
+        .map_err(|e| e.to_string())?;
+    let youtube_client = state.get_client(Platform::YouTube)
+        .map_err(|e| e.to_string())?;
+
+    let bilibili_status = bilibili_client.verify_cookies()
+        .unwrap_or(CookiesStatus::NotFound);
+    let youtube_status = youtube_client.verify_cookies()
+        .unwrap_or(CookiesStatus::NotFound);
+
+    Ok(CookiesStatusResponse {
+        bilibili: serde_json::to_value(&bilibili_status).ok().and_then(|v| {
+            v.as_str().map(|s| s.to_string())
+        }).unwrap_or("notfound".to_string()),
+        youtube: serde_json::to_value(&youtube_status).ok().and_then(|v| {
+            v.as_str().map(|s| s.to_string())
+        }).unwrap_or("notfound".to_string()),
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CookiesStatusResponse {
+    pub bilibili: String,
+    pub youtube: String,
+}
+
+#[tauri::command]
+pub async fn import_youtube_cookies(content: String) -> Result<(), String> {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap())
+        .join("bilibili-downloader");
+
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("创建配置目录失败: {}", e))?;
+
+    let cookies_file = config_dir.join("youtube_cookies.txt");
+
+    // 写入 cookies 内容
+    std::fs::write(&cookies_file, content)
+        .map_err(|e| format!("写入 cookies 文件失败: {}", e))?;
+
+    eprintln!("✓ YouTube Cookies 已导入: {}", cookies_file.display());
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_youtube_cookies() -> Result<(), String> {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap())
+        .join("bilibili-downloader");
+
+    let cookies_file = config_dir.join("youtube_cookies.txt");
+
+    if cookies_file.exists() {
+        std::fs::remove_file(&cookies_file)
+            .map_err(|e| format!("删除 cookies 文件失败: {}", e))?;
+        eprintln!("✓ YouTube Cookies 已清除");
+    }
+
+    Ok(())
+}
